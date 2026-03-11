@@ -205,3 +205,32 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ===================================================
+#  캡스톤 프로젝트 맞춤형 추가 설정 (FastAPI, 크롤러 등)
+# ===================================================
+
+# 1. VS Code 에디터 설정 (팀원 간 충돌 방지)
+.vscode/
+
+# 2. 운영체제(OS) 찌꺼기 파일 (맥/윈도우 혼용 시 필수)
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 3. 크롤링 데이터 및 임시 파일 (대용량 파일 깃허브 업로드 방지)
+# (크롤링한 5천 권의 데이터가 깃에 올라가면 용량 초과로 꼬일 수 있습니다)
+crawler/data/
+*.csv
+*.xlsx
+*.parquet
+
+# 4. 애플리케이션 및 시스템 로그
+logs/
+*.log
+
+# 5. 환경변수 파일 중복 체크 (기존에 있지만 확실히 하기 위해)
+.env
+.env.local
+.env.development
+.env.production

@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  # 서비스 이름 (컨테이너 간 통신할 때 쓰이는 이름)
+  bookagent-db:
+    #  핵심: pgvector가 컴파일되어 내장된 공식 이미지 (PostgreSQL 16 버전 기반)
+    image: pgvector/pgvector:pg16
+    container_name: bookfit_postgres
+    restart: always # 도커 데몬이 켜지면 무조건 자동으로 다시 실행되게 설정
+
+    # DB 초기 세팅용 환경 변수들
+    environment:
+      # 나중에 .env 파일의 DATABASE_URL과 이 정보들이 정확히 일치해야 합니다.
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: password123!
+      POSTGRES_DB: bookfit # 컨테이너가 뜰 때 이 이름으로 빈 DB를 자동 생성함
+
+      # (옵션) 한글 검색이나 정렬을 위한 타임존/인코딩 설정
+      TZ: Asia/Seoul
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+
+    # 로컬 PC의 5432 포트와 컨테이너 내부의 5432 포트를 연결 (Port Forwarding)
+    ports:
+      - "5432:5432"
+
+    # 도커 컨테이너가 삭제되어도 데이터가 날아가지 않도록 로컬 저장소와 마운트 (Volume)
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+# 위의 volumes에서 사용할 논리적 볼륨 이름 정의
+volumes:
+  pgdata:

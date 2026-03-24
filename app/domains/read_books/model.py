@@ -1,4 +1,4 @@
-from sqlalchemy import String, Integer, ForeignKey, Text
+from sqlalchemy import ForeignKey, Text , String
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -11,5 +11,4 @@ class ReadBook(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     book_id: Mapped[int] = mapped_column(nullable=False) # 도서 ID
     review: Mapped[str] = mapped_column(Text, nullable=True) # 독후감(Text 타입은 긴 글 가능)
-    rating: Mapped[int] = mapped_column(Integer, nullable=True)
-    # felt_difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    felt_difficulty: Mapped[str] = mapped_column(String(10), nullable=False, default="보통")

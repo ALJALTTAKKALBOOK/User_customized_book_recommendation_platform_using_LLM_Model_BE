@@ -4,12 +4,14 @@ from sqlalchemy import text
 
 from app.domains.users.router import router as user_router
 from app.domains.books.router import router as book_router
+# from app.domains.read_books.router import router as review_router
 from app.core.database import engine, Base
 
 # 1. 엔티티(Model)들을 무조건 임포트!!! 
 # 이걸 임포트 안 하면 SQLAlchemy(Base)가 "어떤 테이블을 만들어야 하는지" 모름
 import app.domains.users.model # type: ignore
 import app.domains.books.model # type: ignore
+# import app.domains.read_books.model # type: ignore
 
 # 2. 서버 생명주기(Lifecycle) 관리자
 @asynccontextmanager
@@ -38,6 +40,7 @@ app = FastAPI(
 # 컨트롤러(라우터) 조립하기
 app.include_router(user_router, prefix="/api")
 app.include_router(book_router, prefix="/api")
+# app.include_router(review_router, prefix="/api")
 
 @app.get("/")
 def health_check():

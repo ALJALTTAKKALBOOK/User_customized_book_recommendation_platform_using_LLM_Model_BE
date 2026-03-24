@@ -1,11 +1,10 @@
 from pydantic import BaseModel, Field
-from typing import Optional
 
 class ReviewCreate(BaseModel):
     book_id: int
     review: str = Field(..., max_length=2000)
     rating: int = Field(..., ge=1, le=5)
-    # felt_difficulty: int = Field(..., ge=1, le=5, description="1: 매우 쉬움, 5: 매우 어려움")
+    felt_difficulty: int = Field(..., ge=1, le=5, description="1: 매우 쉬움, 5: 매우 어려움")
     # 응답용 스키마 추가
 class ReviewResponse(BaseModel):
     id: int

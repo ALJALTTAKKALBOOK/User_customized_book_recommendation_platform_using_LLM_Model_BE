@@ -1,6 +1,7 @@
 import json
 import logging
-from openai import AsyncOpenAI, APIError, RateLimitError
+from openai import AsyncOpenAI
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -26,8 +27,8 @@ SYSTEM_PROMPT = """너는 사용자의 독서 근력을 평가하는 '독서 수
 {"domain": "역사", "change": 2}
 """
 
-# 💡 함수 파라미터 변경: felt_difficulty 를 추가로 받습니다.
-async def analyze_review_with_llm(content: str, felt_difficulty: int) -> dict:
+#  함수 파라미터 변경: felt_difficulty 를 추가로 받습니다.
+async def analyze_review_with_llm(content: str, felt_difficulty: int) -> dict[str, str|int]:
     try:
         response = await client.chat.completions.create(
             model="gpt-4o-mini", 
@@ -44,8 +45,12 @@ async def analyze_review_with_llm(content: str, felt_difficulty: int) -> dict:
             max_tokens=100 
         )
         
-        raw_content = response.choices[0].message.content
+        raw_content : str|None = response.choices[0].message.content
         logger.info(f"LLM Raw Response (Difficulty: {felt_difficulty}): {raw_content}")
+        
+        if not raw_content:
+            logger.error("LLM 응답이 비어 있습니다.")
+            return {"domain": "기타", "change": 0}
         
         result = json.loads(raw_content)
         domain = str(result.get("domain", "기타")).strip()

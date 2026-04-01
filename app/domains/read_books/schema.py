@@ -1,18 +1,29 @@
 from pydantic import BaseModel, Field
+from typing import Optional
 
 class ReviewCreate(BaseModel):
-    book_id: int
-    review: str = Field(..., max_length=2000)
-    rating: int = Field(..., ge=1, le=5)
-    felt_difficulty: int = Field(..., ge=1, le=5, description="1: 매우 쉬움, 5: 매우 어려움")
-    # 응답용 스키마 추가
+    book_id: int = Field(..., description="도서 ID")
+    category: str = Field(..., description="책의 분야/카테고리")
+    feeling_difficulty: str = Field(..., description="체감 난이도")
+
+    # 구조화된 질문 2개 생성
+    learned_content: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Q1. 이 책에서 가장 유용했거나 새롭게 알게 된 개념은 무엇인가요?"
+    )
+    hard_content: Optional[str] = Field(
+        None, 
+        max_length=1000, 
+        description="Q2. 반대로 이해하기 힘들었거나 아쉬웠던 부분은 무엇인가요?"
+    )
+
 class ReviewResponse(BaseModel):
     id: int
     user_id: int
     book_id: int
-    review: str
-    rating: int
-    # created_at: datetime  (필요하다면 BaseTimeEntity의 필드 추가)
+    review: Optional[str] # DB에 조립되어 저장된 최종본이 나갑니다.
+    feeling_difficulty: str
 
     class Config:
-        from_attributes = True # SQLAlchemy 객체를 Pydantic 모델로 변환 (orm_mode의 새 이름)
+        from_attributes = True

@@ -16,5 +16,4 @@ async def post_review(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # 서비스 계층으로 현재 유저 ID를 따로 넘깁니다.
     return await create_review_service(db, current_user.id, data, background_tasks)

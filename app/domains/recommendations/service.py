@@ -203,7 +203,7 @@ async def retrieve_books_node(state: AgentState) -> dict[str, Any]:
     
     # 카테고리 필터링: 만약 HyDE가 특정 소분류까지 지정했다면 그걸로 필터링, 아니라면 대분류(장르)로라도 필터링
     if hyde_target_category:
-        stmt = stmt.where(Book.sub_category == hyde_target_category and Book.difficulty >= hyde_difficulty_level - 1 and Book.difficulty <= hyde_difficulty_level + 1)
+        stmt = stmt.where(Book.sub_category == hyde_target_category) #and Book.difficulty >= hyde_difficulty_level - 1 and Book.difficulty <= hyde_difficulty_level + 1)
     else:
         stmt = stmt.where(Book.genre == hyde_target_genre)
         

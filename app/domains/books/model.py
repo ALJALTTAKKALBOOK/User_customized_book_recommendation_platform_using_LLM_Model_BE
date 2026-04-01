@@ -5,7 +5,7 @@ from sqlalchemy import String, Integer, Text, BigInteger, DateTime
 from sqlalchemy.dialects.postgresql import ARRAY
 from pgvector.sqlalchemy import Vector # type: ignore
 
-from app.core.database import Base 
+from app.core.database import Base
 
 class Book(Base):
     __tablename__ = "books"

@@ -2,6 +2,9 @@ import json
 import logging
 from typing import Dict, Any
 from openai import AsyncOpenAI
+#  LangChain 전용 임포트 추가
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import SecretStr
 
 from app.core.config import settings
 
@@ -55,7 +58,11 @@ async def generate_json_with_llm(
         
         raw_content = response.choices[0].message.content
         logger.info(f"[LLM Helper] Raw Response: {raw_content}")
-        
+       
+        if not raw_content:
+            logger.warning("[LLM Helper] 빈 응답이 반환되었습니다.")
+            return {}
+            
         return json.loads(raw_content)
 
     except json.JSONDecodeError as e:
@@ -64,3 +71,45 @@ async def generate_json_with_llm(
     except Exception as e:
         logger.error(f"[LLM Helper] LLM API 에러: {e}")
         return {}
+    
+    
+
+# =====================================================================
+# 2. LangChain 전용 객체 및 팩토리 (Agent, RAG, Node 등에서 공용 사용)
+# =====================================================================
+
+#  [공용 객체 1] 분석용 LLM (환각 방지, 일관성 유지용 / 온도 0)
+# - 사용처: Context 분석(Node 1), 유저 의도 파악 등 정확해야 할 때
+llm_analyzer = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0,
+    api_key = SecretStr(settings.OPENAI_API_KEY)
+)
+
+#  [공용 객체 2] 창작용 LLM (유창한 문장, 추천 사유 생성용 / 온도 0.7)
+# - 사용처: 가상 책 생성(HyDE), 유저에게 추천 이유 설명할 때
+llm_creator = ChatOpenAI(
+    model="gpt-4o-mini",
+    temperature=0.7,
+    api_key = SecretStr(settings.OPENAI_API_KEY)
+)
+
+#  [팩토리 함수] 특수한 설정(예: 스트리밍)이 필요할 때 찍어내는 함수
+def get_langchain_llm(
+    model: str = "gpt-4o-mini", 
+    temperature: float = 0.0, 
+    streaming: bool = False
+) -> ChatOpenAI:
+    """
+    필요할 때마다 LangChain ChatOpenAI 객체를 생성해서 반환합니다.
+    특히, SSE 스트리밍 응답을 할 때는 streaming=True로 호출해서 쓰세요.
+    """
+    return ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        api_key = SecretStr(settings.OPENAI_API_KEY),
+        streaming=streaming
+    )
+    
+embeddings_client = OpenAIEmbeddings(model="text-embedding-3-small")
+    

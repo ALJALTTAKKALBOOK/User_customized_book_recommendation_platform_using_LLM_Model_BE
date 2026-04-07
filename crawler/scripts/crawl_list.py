@@ -10,8 +10,7 @@ from config import (
     CATEGORY_URL,
     KYOBO_CATEGORY_CODES,
     CRAWL_DELAY,
-    TEST_MODE,
-    TEST_LIMIT,
+    MAX_PER_CATEGORY
 )
 
 
@@ -57,10 +56,8 @@ async def crawl_category(page, category_name, category_code):
         all_urls.extend(urls)
         print(f"  {len(urls)}권 발견 (누적: {len(all_urls)}권)")
         
-        # 테스트 모드: 카테고리당 제한된 수만 수집
-        if TEST_MODE and len(all_urls) >= TEST_LIMIT:
-            all_urls = all_urls[:TEST_LIMIT]
-            print(f"  [테스트 모드] {TEST_LIMIT}권 제한 도달. 다음 카테고리로.")
+        if len(all_urls) >= MAX_PER_CATEGORY:
+            all_urls = all_urls[:MAX_PER_CATEGORY]
             break
         
         page_num += 1

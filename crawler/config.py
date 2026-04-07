@@ -17,8 +17,8 @@ KYOBO_CATEGORY_CODES = {
     "모바일프로그래밍": "3316",
 }
 
-CRAWL_DELAY = 2       # 요청 간격 (초), 페이지 요청 사이 delay(IP 차단 방지)
-SAVE_INTERVAL = 500   # 중간 저장 간격 (권)
-
-TEST_MODE = True      # True면 카테고리당 3권만 수집
-TEST_LIMIT = 3        # 테스트 시 카테고리당 수집 권수
+# ── 크롤링 설정 ──
+CRAWL_DELAY = 2             # 요청 간격 (초), 페이지 요청 사이 delay(IP 차단 방지)
+MAX_PER_CATEGORY = 700      # 카테고리당 최대 수집 권수
+SAVE_INTERVAL = 500         # crawl_detail 중간 저장 간격 (권)
+HEADLESS = True             # True: 브라우저 창 숨김 (대량 수집용), False: 디버깅용

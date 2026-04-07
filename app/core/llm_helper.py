@@ -111,5 +111,8 @@ def get_langchain_llm(
         streaming=streaming
     )
     
-embeddings_client = OpenAIEmbeddings(model="text-embedding-3-small")
+embeddings_client = OpenAIEmbeddings(
+    model="text-embedding-3-small",
+    api_key=SecretStr(settings.OPENAI_API_KEY)  
+)
     

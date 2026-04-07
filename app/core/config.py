@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     ALGORITHM: str = "HS256"
 
+    ALLOWED_ORIGINS_CORS: str = "http://localhost:3000"
+    
     @property
     def DATABASE_URL(self) -> str:
         # 형식: postgresql+asyncpg://아이디:비번@호스트:포트/DB이름

@@ -9,7 +9,7 @@ INPUT_PATH = os.path.join(DATA_DIR, 'raw_books.json')
 OUTPUT_PATH = os.path.join(DATA_DIR, 'cleaned_books.json')
 
 # 정제 기준
-MIN_SUMMARY_LENGTH = 30   # summary 최소 글자 수
+MIN_SUMMARY_LENGTH = 20   # summary 최소 글자 수
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
 

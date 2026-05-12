@@ -11,6 +11,16 @@ from . import schema, service
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
+@router.get("/me/", summary="현재 로그인한 유저 정보 조회")
+async def get_my_info(current_user: User = Depends(get_current_user)):
+    #  객체를 통째로 보내지 말고, 딕셔너리로 직접 만들어서 보내면 500 에러를 방지할 수 있습니다.
+    return {
+        "id": current_user.id,
+        "email": current_user.email,
+        "nickname": current_user.nickname,
+        "domain_levels": current_user.domain_levels or {} # 없으면 빈 객체
+    }
+
 # [회원가입 API]
 # response_model을 지정하면, Service에서 리턴한 Entity가 DTO로 자동 변환되어 JSON으로 반환됩니다!
 @router.post("/auth/signup", response_model=schema.UserResponse, status_code=status.HTTP_201_CREATED)

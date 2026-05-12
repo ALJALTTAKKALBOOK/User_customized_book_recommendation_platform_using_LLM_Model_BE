@@ -1,6 +1,7 @@
 import json
 import logging
 import numpy as np
+import time
 from typing import Dict, TypedDict, List, AsyncGenerator, Any, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
@@ -25,7 +26,11 @@ CATEGORY_EMBEDDING_CACHE = {}
 
 def calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
     """두 벡터 간의 코사인 유사도를 계산합니다."""
-    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    start_time = time.time()
+    result = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    end_time = time.time()
+    print(f"코사인 유사도 계산 시간: {end_time - start_time}")
+    return result
 
 async def get_or_embed_categories():
     """앱 실행 후 최초 1회만 카테고리를 임베딩하고 캐싱합니다."""
@@ -79,14 +84,6 @@ class HydeOutput(BaseModel):
 async def analyze_context_node(state: AgentState) -> dict[str, Any]:
     # 1. 카테고리 제한(ALL_SUB_CATEGORIES)을 없애고 자유로운 묘사를 요구
     prompt = ChatPromptTemplate.from_messages([
-<<<<<<< HEAD
-        ("system",
-         f"너는 도서 추천을 위한 컨텍스트 분석기야.\n"
-         f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n"
-         f"유저의 질문과 숙련도를 분석해서, 유저가 필요로 하는 도서의 구체적인 주제나 기술 분야를 상세하게 묘사해."
-        ),
-        ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
-=======
     ("system",
         f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
         f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n"
@@ -98,7 +95,6 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
         "5. 만약 질문한 분야가 유저 숙련도(domain_levels)에 아예 없다면 기본 난이도를 1로 설정해."
     ),
     ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
->>>>>>> d9d993e08463eadabdf6b159eb0fbc42f42015d1
     ])
     
     structured_llm = llm_analyzer.with_structured_output(ContextAnalysisOutput)

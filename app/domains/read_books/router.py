@@ -1,13 +1,37 @@
+from typing import List  # 👈 추가: List 타입을 위해 필요
 from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db
-from app.domains.read_books.schema import BookAddRequest, ReviewUpdateRequest, ReviewCreate, ReviewResponse
-from app.domains.read_books.service import add_book_to_library_service, update_review_service, create_review_service
+from app.core.dependencies import get_db, get_current_user # 👈 하나로 합침
+from app.domains.read_books.schema import (
+    BookAddRequest, 
+    ReviewUpdateRequest, 
+    ReviewCreate, 
+    ReviewResponse, 
+    ReadBookResponse  # 👈 추가: 목록 조회 응답 스키마
+)
+from app.domains.read_books.service import (
+    add_book_to_library_service, 
+    update_review_service, 
+    create_review_service,
+    get_read_books_service  # 👈 추가: 목록 조회 서비스 함수
+)
 from app.domains.users.model import User 
-from app.core.dependencies import get_current_user
 
 router = APIRouter(prefix="/read-books", tags=["Read Books (내 서재)"])
+
+# ---------------------------------------------------------
+# 0. 내 서재 도서 목록 조회 (GET)
+# ---------------------------------------------------------
+@router.get("/", response_model=List[ReadBookResponse], summary="내 서재 도서 목록 조회")
+async def get_my_library(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    현재 로그인한 유저가 자신의 서재에 담은 모든 도서 목록을 가져옵니다.
+    """
+    return await get_read_books_service(db, current_user.id)
 
 
 # ---------------------------------------------------------

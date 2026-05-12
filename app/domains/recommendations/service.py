@@ -79,12 +79,26 @@ class HydeOutput(BaseModel):
 async def analyze_context_node(state: AgentState) -> dict[str, Any]:
     # 1. 카테고리 제한(ALL_SUB_CATEGORIES)을 없애고 자유로운 묘사를 요구
     prompt = ChatPromptTemplate.from_messages([
+<<<<<<< HEAD
         ("system",
          f"너는 도서 추천을 위한 컨텍스트 분석기야.\n"
          f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n"
          f"유저의 질문과 숙련도를 분석해서, 유저가 필요로 하는 도서의 구체적인 주제나 기술 분야를 상세하게 묘사해."
         ),
         ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
+=======
+    ("system",
+        f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
+        f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n"
+        f"[허용된 카테고리(소분류)]: {', '.join(ALL_SUB_CATEGORIES)}\n\n"
+        "1. 유저의 질문을 보고 [허용된 카테고리] 중에서 가장 적합한 것을 찾아.\n"
+        "2. 만약 [허용된 카테고리] 중에 적합한 것이 아예 없다면, 카테고리는 null로 비워두고 [허용된 장르]만 선택해.\n"
+        "3. 질문에 '기초, 처음, 쉬운' 등이 있으면 소분류(장르)에 대응되는 숙련도를 유지하거나 -1 하향해.\n"
+        "4. '심화, 실전, 어려운' 등이 있으면 난이도 +2 상향해.\n"
+        "5. 만약 질문한 분야가 유저 숙련도(domain_levels)에 아예 없다면 기본 난이도를 1로 설정해."
+    ),
+    ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
+>>>>>>> d9d993e08463eadabdf6b159eb0fbc42f42015d1
     ])
     
     structured_llm = llm_analyzer.with_structured_output(ContextAnalysisOutput)

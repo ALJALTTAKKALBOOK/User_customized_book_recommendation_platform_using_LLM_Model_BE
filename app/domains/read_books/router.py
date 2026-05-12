@@ -40,13 +40,12 @@ async def update_book_review(
     """
     내 서재에 이미 등록된 책을 다 읽은 후, 체감 난이도와 후기를 남깁니다.
     이 API가 호출되면 백그라운드에서 유저의 레벨이 자동으로 업데이트(LLM) 됩니다.
-    - read_book_id: 내 서재에 등록된 고유 ID (book_id가 아님에 주의!)
     """
     return await update_review_service(db, read_book_id, current_user.id, data, background_tasks)
 
 
 # ---------------------------------------------------------
-# 3. 과거에 읽은 책을 한 번에 '등록+리뷰' 할 때
+# 3. 과거에 읽은 책을 '등록+리뷰' 할 때
 # ---------------------------------------------------------
 @router.post("/direct", response_model=ReviewResponse, summary="책 등록과 동시에 리뷰 작성")
 async def create_book_and_review_direct(

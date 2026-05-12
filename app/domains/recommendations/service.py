@@ -1,5 +1,6 @@
 import json
 import logging
+import numpy as np
 from typing import Dict, TypedDict, List, AsyncGenerator, Any, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
@@ -16,6 +17,27 @@ from app.core.constants import GENRES, ALL_SUB_CATEGORIES
 from app.core.llm_helper import llm_analyzer, llm_creator, embeddings_client
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------
+# 0. 시맨틱 라우팅 유틸리티 작성(최초 1회만 메모리에 캐싱)
+# ---------------------------------------------------------
+CATEGORY_EMBEDDING_CACHE = {}
+
+def calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
+    """두 벡터 간의 코사인 유사도를 계산합니다."""
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
+async def get_or_embed_categories():
+    """앱 실행 후 최초 1회만 카테고리를 임베딩하고 캐싱합니다."""
+    global CATEGORY_EMBEDDING_CACHE
+    
+    if not CATEGORY_EMBEDDING_CACHE:
+        for category in ALL_SUB_CATEGORIES:
+            text_to_embed = f"IT 기술 및 프로그래밍 도서 카테고리: {category}"
+            vector = await embeddings_client.aembed_query(text_to_embed)
+            CATEGORY_EMBEDDING_CACHE[category] = np.array(vector)
+            
+    return CATEGORY_EMBEDDING_CACHE
 
 # ---------------------------------------------------------
 # 1. State 및 Pydantic 정의 (기존과 동일, db_session 없음)
@@ -39,10 +61,11 @@ class AgentState(TypedDict):
 # 2. 각 Node의 입출력 스키마 정의 (Pydantic 모델)
 # ---------------------------------------------------------
 class ContextAnalysisOutput(BaseModel):
-    target_genre: str = Field(description="가장 적합한 장르(대분류)")
-    target_sub_category: str | None = Field(description="적합한 카테고리(소분류)")
-    calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
-    
+    target_genre: str = Field(description="IT와 같은 대분류 장르")
+    calculated_difficulty: int = Field(description="1~10 사이의 난이도")
+    category_description: str = Field(
+        description="유저의 질문과 숙련도를 바탕으로, 찾고자 하는 도서의 구체적인 기술 스택, 언어, 또는 분야를 상세하게 묘사하세요. (예: 'React와 Next.js를 활용한 프론트엔드 상태 관리 및 UI 개발')"
+    )
 class HydeOutput(BaseModel):
     summary: str = Field(description="가상 도서 줄거리")
     keywords: list[str] = Field(description="키워드")
@@ -54,29 +77,48 @@ class HydeOutput(BaseModel):
 
 # node1
 async def analyze_context_node(state: AgentState) -> dict[str, Any]:
+    # 1. 카테고리 제한(ALL_SUB_CATEGORIES)을 없애고 자유로운 묘사를 요구
     prompt = ChatPromptTemplate.from_messages([
         ("system",
-         f"너는 도서 추천을 위한 컨텍스트 분석기야...\n"
+         f"너는 도서 추천을 위한 컨텍스트 분석기야.\n"
          f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n"
-         f"[허용된 카테고리(소분류)]: {', '.join(ALL_SUB_CATEGORIES)}\n"
+         f"유저의 질문과 숙련도를 분석해서, 유저가 필요로 하는 도서의 구체적인 주제나 기술 분야를 상세하게 묘사해."
         ),
         ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
     ])
+    
     structured_llm = llm_analyzer.with_structured_output(ContextAnalysisOutput)
     chain = prompt | structured_llm
     
     raw_result = await chain.ainvoke({"domain_levels": state["domain_levels"], "query": state["query"]})
     result = cast(ContextAnalysisOutput, raw_result)
 
-    if not result.target_sub_category or result.target_sub_category not in ALL_SUB_CATEGORIES:
-        result.target_sub_category = ""
-        
+    # 2. LLM이 생성한 '카테고리 묘사문'을 임베딩 (벡터화)
+    description_vector = np.array(
+        await embeddings_client.aembed_query(result.category_description)
+    )
+
+    # 3. 사전에 임베딩된 카테고리들과 비교 (시맨틱 라우팅 핵심)
+    category_cache = await get_or_embed_categories()
+    
+    best_category = ""
+    highest_score = -1.0
+
+    for category_name, category_vector in category_cache.items():
+        score = calculate_cosine_similarity(description_vector, category_vector)
+        if score > highest_score:
+            highest_score = score
+            best_category = category_name
+
+    logger.info(f"LLM이 파악한 주제: {result.category_description}")
+    logger.info(f"시맨틱 라우팅 결과: '{best_category}'로 매핑됨 (유사도: {highest_score:.4f})")
+
+    # 4. 강제 매핑된 best_category를 State로 넘겨줍니다.
     return {
         "hyde_target_genre": result.target_genre,
-        "hyde_target_category": result.target_sub_category,
+        "hyde_target_category": best_category, # 완벽하게 ALL_SUB_CATEGORIES 중 하나가 보장됨
         "hyde_difficulty_level": result.calculated_difficulty
     }
-
 # node2
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]

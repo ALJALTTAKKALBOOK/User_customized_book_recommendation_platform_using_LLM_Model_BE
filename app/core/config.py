@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "BookAgent API" # 디폴트값
     
     DB_USER: str = "root"
-    DB_PASSWORD: str = ""
+    DB_PASSWORD: str = "password123!"
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_NAME: str = "bookfit"
@@ -21,14 +21,13 @@ class Settings(BaseSettings):
     
     JWT_SECRET_KEY: str = ""
     OPENAI_API_KEY: str = ""
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
     ALGORITHM: str = "HS256"
 
     ALLOWED_ORIGINS_CORS: str = "http://localhost:3000"
     
     @property
     def DATABASE_URL(self) -> str:
-        # 형식: postgresql+asyncpg://아이디:비번@호스트:포트/DB이름
+        # 형식: postgresql+asyncpg://아이디:비번@호스트:포  트/DB이름
         return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASSWORD}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     model_config = SettingsConfigDict(

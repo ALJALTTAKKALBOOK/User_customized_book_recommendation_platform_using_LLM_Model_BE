@@ -43,10 +43,15 @@ app = FastAPI(
     lifespan=lifespan  
 )
 
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 # CORS 미들웨어 추가
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS_CORS.split(","),
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

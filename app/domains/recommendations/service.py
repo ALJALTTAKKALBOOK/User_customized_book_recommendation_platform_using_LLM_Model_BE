@@ -1,6 +1,8 @@
 import json
 import logging
-from typing import Dict, TypedDict, List, AsyncGenerator, Any, cast
+import numpy as np
+import time
+from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +16,45 @@ from app.domains.users.model import User
 from app.domains.books.model import Book
 from app.core.constants import GENRES, ALL_SUB_CATEGORIES
 from app.core.llm_helper import llm_analyzer, llm_creator, embeddings_client
+from app.domains.users.model import MockUser
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------
+# 0. 시맨틱 라우팅 유틸리티 작성(최초 1회만 메모리에 캐싱)
+# ---------------------------------------------------------
+CATEGORY_EMBEDDING_CACHE = {}
+
+def calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
+    """두 벡터 간의 코사인 유사도를 계산합니다."""
+    start_time = time.time()
+    result = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+    end_time = time.time()
+    print(f"코사인 유사도 계산 시간: {end_time - start_time}")
+    return result
+
+CATEGORY_DESCRIPTIONS = {
+    "컴퓨터공학": "컴퓨터공학 기초 이론서. 자료구조, 알고리즘, 컴퓨터 구조, 이산수학, 운영체제 원리, 컴파일러 등 학부 전공서. 컴퓨터 역사 및 기술 발전사 교양서 포함.",
+    "IT일반": "비전공자를 위한 IT 교양서. 디지털 리터러시, IT 산업 트렌드, 빅테크 비즈니스 모델, AI/챗GPT 교양서, IT 용어 해설, 개발자와 비개발자 간 소통.",
+    "OS": "운영체제 전문서. 프로세스 관리, 멀티스레딩, 동시성 제어, 데드락, 메모리 관리, 스케줄링, 파일 시스템, 리눅스 커널 분석.",
+    "네트워크": "컴퓨터 네트워크 전문서. TCP/IP, OSI 7계층, 소켓 프로그래밍, 라우팅, 패킷 교환, 네트워크 프로토콜.",
+    "보안/해킹": "정보보안 및 해킹 전문서. 웹 취약점(XSS, SQL Injection), 침투 테스트, 리버스 엔지니어링, 악성코드 분석, 암호학.",
+    "데이터베이스": "데이터베이스 전문서. RDBMS, SQL, 쿼리 튜닝, 인덱스 최적화, 실행 계획 분석, NoSQL(Redis, MongoDB), 데이터 모델링.",
+    "개발방법론": "소프트웨어 개발 프로세스. 애자일, 스크럼, TDD, 리팩토링, 클린 코드, 디자인 패턴, Git 브랜치 전략, CI/CD, 데브옵스, 프로젝트 관리.",
+    "웹프로그래밍": "웹 애플리케이션 개발서. 백엔드(스프링 부트, Node.js, Django), 프론트엔드(React, Vue, TypeScript), REST API, MSA, 대용량 트래픽 처리.",
+    "프로그래밍 언어": "특정 프로그래밍 언어 자체의 문법과 원리. 파이썬, 자바, C/C++, JavaScript 등의 언어 입문서 및 심화서. 객체지향 원리, 메모리 관리, 모던 문법.",
+    "모바일프로그래밍": "모바일 앱 개발서. iOS(Swift, RxSwift, MVVM), Android(Kotlin), 크로스플랫폼(Flutter, React Native) 네이티브 앱 개발.",
+}
+
+async def get_or_embed_categories():
+    global CATEGORY_EMBEDDING_CACHE
+    if not CATEGORY_EMBEDDING_CACHE:
+        for category in ALL_SUB_CATEGORIES:
+            description = CATEGORY_DESCRIPTIONS.get(category, category)
+            text_to_embed = f"{category}: {description}"
+            vector = await embeddings_client.aembed_query(text_to_embed)
+            CATEGORY_EMBEDDING_CACHE[category] = np.array(vector)
+    return CATEGORY_EMBEDDING_CACHE
 
 # ---------------------------------------------------------
 # 1. State 및 Pydantic 정의 (기존과 동일, db_session 없음)
@@ -23,7 +62,6 @@ logger = logging.getLogger(__name__)
 class AgentState(TypedDict):
     query: str
     domain_levels: dict[str, int]
-    user: User
     
     hyde_target_genre: NotRequired[str]  
     hyde_target_category: NotRequired[str]      
@@ -40,9 +78,11 @@ class AgentState(TypedDict):
 # ---------------------------------------------------------
 class ContextAnalysisOutput(BaseModel):
     target_genre: str = Field(description="가장 적합한 장르(대분류)")
-    target_sub_category: str | None = Field(description="적합한 카테고리(소분류)")
+    target_sub_category: str = Field(  # | None 제거
+        description="질문의 핵심 주제를 묘사하는 짧고 명확한 가상 카테고리명 (예: 'OS', '프로그래밍언어')"
+    )
     calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
-    
+
 class HydeOutput(BaseModel):
     summary: str = Field(description="가상 도서 줄거리")
     keywords: list[str] = Field(description="키워드")
@@ -54,34 +94,54 @@ class HydeOutput(BaseModel):
 
 # node1
 async def analyze_context_node(state: AgentState) -> dict[str, Any]:
+    # ALL_SUB_CATEGORIES 노출 제거 — LLM이 직접 분류 결정을 하지 않도록 함
     prompt = ChatPromptTemplate.from_messages([
-    ("system",
-        f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
-        f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n"
-        f"[허용된 카테고리(소분류)]: {', '.join(ALL_SUB_CATEGORIES)}\n\n"
-        "1. 유저의 질문을 보고 [허용된 카테고리] 중에서 가장 적합한 것을 찾아.\n"
-        "2. 만약 [허용된 카테고리] 중에 적합한 것이 아예 없다면, 카테고리는 null로 비워두고 [허용된 장르]만 선택해.\n"
-        "3. 질문에 '기초, 처음, 쉬운' 등이 있으면 소분류(장르)에 대응되는 숙련도를 유지하거나 -1 하향해.\n"
-        "4. '심화, 실전, 어려운' 등이 있으면 난이도 +2 상향해.\n"
-        "5. 만약 질문한 분야가 유저 숙련도(domain_levels)에 아예 없다면 기본 난이도를 1로 설정해."
-    ),
-    ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
+        ("system",
+            f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
+            f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n\n"
+            "1. 유저의 질문을 분석해서, 어떤 IT 분야/주제의 책을 찾는지 가장 잘 묘사하는 "
+            "**가상의 카테고리명을 자유롭게 생성**해. 카테고리 후보 목록을 보지 않고, "
+            "핵심 키워드가 2~4개 포함되는 1줄로 작성해.\n"
+            "2. [허용된 장르(대분류)] 중 가장 적합한 장르 하나를 선택해.\n"
+            "3. 질문에 '기초, 처음, 쉬운' 등이 있으면 유저 숙련도(domain_levels)의 해당 분야 레벨을 기준으로 -1 하향해.\n"
+            "4. '심화, 실전, 어려운' 등이 있으면 난이도 +2 상향해.\n"
+            "5. 만약 질문한 분야가 유저 숙련도(domain_levels)에 아예 없다면 기본 난이도를 1로 설정해."
+        ),
+        ("user", "내 숙련도: {domain_levels}\n내 질문: {query}")
     ])
+
     structured_llm = llm_analyzer.with_structured_output(ContextAnalysisOutput)
     chain = prompt | structured_llm
     
     raw_result = await chain.ainvoke({"domain_levels": state["domain_levels"], "query": state["query"]})
     result = cast(ContextAnalysisOutput, raw_result)
 
-    if not result.target_sub_category or result.target_sub_category not in ALL_SUB_CATEGORIES:
-        result.target_sub_category = ""
-        
+    # 2. LLM이 생성한 '카테고리 묘사문'을 임베딩 (벡터화)
+    description_vector = np.array(
+        await embeddings_client.aembed_query(result.target_sub_category)
+    )
+
+    # 3. 사전에 임베딩된 카테고리들과 비교 (시맨틱 라우팅 핵심)
+    category_cache = await get_or_embed_categories()
+    
+    best_category = ""
+    highest_score = -1.0
+
+    for category_name, category_vector in category_cache.items():
+        score = calculate_cosine_similarity(description_vector, category_vector)
+        if score > highest_score:
+            highest_score = score
+            best_category = category_name
+
+    logger.info(f"LLM이 파악한 주제: {result.target_sub_category}")
+    logger.info(f"시맨틱 라우팅 결과: '{best_category}'로 매핑됨 (유사도: {highest_score:.4f})")
+
+    # 4. 강제 매핑된 best_category를 State로 넘겨줍니다.
     return {
         "hyde_target_genre": result.target_genre,
-        "hyde_target_category": result.target_sub_category,
+        "hyde_target_category": best_category, # 완벽하게 ALL_SUB_CATEGORIES 중 하나가 보장됨
         "hyde_difficulty_level": result.calculated_difficulty
     }
-
 # node2
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
@@ -118,8 +178,6 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     
     hyde_target_genre = state.get("hyde_target_genre", "")
     hyde_target_category = state.get("hyde_target_category")
-    if not hyde_target_category:
-        hyde_target_category = hyde_target_genre
     
     hyde_difficulty_level = state.get("hyde_difficulty_level")
     hyde_summary = state.get("hyde_summary")
@@ -129,7 +187,7 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
         return {"recommended_books":[]}
 
     keyword_str = ", ".join(hyde_keyword)
-    hyde_text_to_embed = f"카테고리: {hyde_target_category}\n난이도: {hyde_difficulty_level}\n키워드: {keyword_str}\n줄거리: {hyde_summary}"
+    hyde_text_to_embed = f"난이도: {hyde_difficulty_level}\n키워드: {keyword_str}\n줄거리: {hyde_summary}"
     
     query_vector = await embeddings_client.aembed_query(hyde_text_to_embed)
 
@@ -222,7 +280,6 @@ async def stream_book_recommendation_service(
     initial_state: AgentState = {
         "query": query,
         "domain_levels": current_user.domain_levels, 
-        "user": current_user,
     }
     
     # 🌟 핵심: 실행 시점에 DB 세션을 config로 포장해서 주입합니다.
@@ -250,14 +307,13 @@ async def stream_book_recommendation_service(
 
 async def get_book_recommendation_service_test(
     query: str, 
-    current_user: User, 
+    current_user: Union[MockUser, User],
     db: AsyncSession
 ) -> Dict[str, Any]:
     
     initial_state: AgentState = {
         "query": query,
         "domain_levels": current_user.domain_levels, 
-        "user": current_user,
     }
     
     # 🌟 테스트용 함수에도 동일하게 config 주입

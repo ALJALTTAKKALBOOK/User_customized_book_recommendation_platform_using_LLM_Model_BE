@@ -1,1 +1,322 @@
-
+[
+    {
+        "id": 1,
+        "scenario": "기초 하향",
+        "query": "컴퓨터 구조나 논리회로 같은 전공 기초가 너무 부족해요. 비전공자도 이해할 수 있는 쉬운 책 추천해주세요.",
+        "domain_levels": {
+            "컴퓨터공학": 3
+        },
+        "expected_sub_category": "컴퓨터공학",
+        "expected_topic": "컴퓨터 구조, 논리회로 기초",
+        "expected_target_level": 1
+    },
+    {
+        "id": 2,
+        "scenario": "심화 상향",
+        "query": "학부 수준의 이산수학이랑 컴구조는 다 뗐습니다. 오퍼레이팅 시스템 만들기 이전 읽어야할 심화 전공 서적 추천해주세요.",
+        "domain_levels": {
+            "컴퓨터공학": 6
+        },
+        "expected_sub_category": "컴퓨터공학",
+        "expected_topic": "컴퓨터공학 심화, 전공 서적",
+        "expected_target_level": 7
+    },
+    {
+        "id": 3,
+        "scenario": "단어 혼동",
+        "query": "프로그래밍 언어 책 말고, 그냥 컴퓨터 공학 역사나 기술 발전사 다룬 교양서 읽고 싶어.",
+        "domain_levels": {},
+        "expected_sub_category": "컴퓨터공학",
+        "expected_topic": "컴퓨터 역사, 교양",
+        "expected_target_level": 2
+    },
+    {
+        "id": 4,
+        "scenario": "광범위 질문",
+        "query": "요즘 챗GPT다 뭐다 기술 트렌드가 너무 빨리 변하는데, 출퇴근길에 가볍게 읽을 만한 IT 교양서 추천좀.",
+        "domain_levels": {
+            "IT일반": 4
+        },
+        "expected_sub_category": "IT일반",
+        "expected_topic": "IT 트렌드, 기술 교양서",
+        "expected_target_level": 2
+    },
+    {
+        "id": 5,
+        "scenario": "기초 하향",
+        "query": "기획자인데 개발자들이랑 소통이 안 돼요. IT 용어나 넓은 개념을 아주 쉽게 설명해준 책 필요합니다.",
+        "domain_levels": {},
+        "expected_sub_category": "IT일반",
+        "expected_topic": "비전공자 IT 용어, 소통",
+        "expected_target_level": 1
+    },
+    {
+        "id": 6,
+        "scenario": "심화 상향",
+        "query": "빅테크 기업들의 비즈니스 모델이나 IT 산업 전반의 심층적인 인사이트를 다룬 전문가용 책 추천해줘.",
+        "domain_levels": {
+            "IT일반": 7
+        },
+        "expected_sub_category": "IT일반",
+        "expected_topic": "IT 비즈니스, 산업 인사이트",
+        "expected_target_level": 8
+    },
+    {
+        "id": 7,
+        "scenario": "기초 하향",
+        "query": "공룡책(OS) 보다가 멘탈 터졌습니다. 운영체제 개념을 그림으로 쉽게 설명해주는 쌩기초 책 없나요?",
+        "domain_levels": {
+            "OS": 3
+        },
+        "expected_sub_category": "OS",
+        "expected_topic": "운영체제 기초, 입문",
+        "expected_target_level": 1
+    },
+    {
+        "id": 8,
+        "scenario": "심화 상향",
+        "query": "리눅스 커널 소스코드를 직접 까보고 분석하고 싶습니다. OS 내부 구조 딥다이브 서적 추천.",
+        "domain_levels": {
+            "OS": 7
+        },
+        "expected_sub_category": "OS",
+        "expected_topic": "리눅스 커널, OS 내부 구조",
+        "expected_target_level": 9
+    },
+    {
+        "id": 9,
+        "scenario": "특정 키워드",
+        "query": "멀티스레딩이랑 데드락, 동시성 제어 부분만 깊게 파고 싶어.",
+        "domain_levels": {
+            "OS": 5
+        },
+        "expected_sub_category": "OS",
+        "expected_topic": "동시성 제어, 멀티스레딩",
+        "expected_target_level": 6
+    },
+    {
+        "id": 10,
+        "scenario": "기초 하향",
+        "query": "OSI 7계층이 뭔지도 모르는 노베이스입니다. 네트워크 기초 진짜 쉽게 쓴 책 추천좀.",
+        "domain_levels": {},
+        "expected_sub_category": "네트워크",
+        "expected_topic": "네트워크 기초, OSI 7계층",
+        "expected_target_level": 1
+    },
+    {
+        "id": 11,
+        "scenario": "심화 상향",
+        "query": "TCP/IP 소켓 프로그래밍을 C언어로 바닥부터 구현해보려 해. 네트워크 프로토콜 심화 책.",
+        "domain_levels": {
+            "네트워크": 6
+        },
+        "expected_sub_category": "네트워크",
+        "expected_topic": "TCP/IP, 소켓 프로그래밍",
+        "expected_target_level": 8
+    },
+    {
+        "id": 12,
+        "scenario": "단어 혼동",
+        "query": "데이터베이스 연결망 말고, 컴퓨터 간의 패킷 교환이랑 라우팅 다루는 네트워크 책.",
+        "domain_levels": {
+            "네트워크": 4
+        },
+        "expected_sub_category": "네트워크",
+        "expected_topic": "라우팅, 패킷 교환",
+        "expected_target_level": 4
+    },
+    {
+        "id": 13,
+        "scenario": "기초 하향",
+        "query": "해킹에 관심이 생겼는데, 정보보안 기사 이론 말고 실습 위주의 재밌는 해킹 입문서 추천해줘.",
+        "domain_levels": {
+            "보안/해킹": 2
+        },
+        "expected_sub_category": "보안/해킹",
+        "expected_topic": "모의 해킹 입문, 보안 실습",
+        "expected_target_level": 2
+    },
+    {
+        "id": 14,
+        "scenario": "특정 키워드",
+        "query": "웹 취약점(XSS, SQL Injection 등) 공격이랑 방어 기법만 전문적으로 파는 책.",
+        "domain_levels": {
+            "보안/해킹": 5
+        },
+        "expected_sub_category": "보안/해킹",
+        "expected_topic": "웹 보안, 취약점 분석",
+        "expected_target_level": 6
+    },
+    {
+        "id": 15,
+        "scenario": "심화 상향",
+        "query": "리버스 엔지니어링이나 악성코드 분석 관련해서 현업 보안 전문가들이 보는 바이블 추천좀.",
+        "domain_levels": {
+            "보안/해킹": 7
+        },
+        "expected_sub_category": "보안/해킹",
+        "expected_topic": "리버스 엔지니어링, 악성코드",
+        "expected_target_level": 9
+    },
+    {
+        "id": 16,
+        "scenario": "기초 하향",
+        "query": "SQL SELECT문도 헷갈려. 데이터베이스 설치부터 쿼리 짜는 법까지 튜토리얼 빵빵한 책.",
+        "domain_levels": {
+            "데이터베이스": 2
+        },
+        "expected_sub_category": "데이터베이스",
+        "expected_topic": "SQL 기초, DB 입문",
+        "expected_target_level": 1
+    },
+    {
+        "id": 17,
+        "scenario": "심화 상향",
+        "query": "RDBMS 설계는 익숙한데, 쿼리 튜닝이나 인덱스 최적화, 실행 계획 분석하는 딥한 책 추천.",
+        "domain_levels": {
+            "데이터베이스": 6
+        },
+        "expected_sub_category": "데이터베이스",
+        "expected_topic": "SQL 튜닝, 인덱스 최적화",
+        "expected_target_level": 8
+    },
+    {
+        "id": 18,
+        "scenario": "단어 혼동",
+        "query": "관계형 DB 말고, 레디스(Redis)나 몽고DB 같은 NoSQL 전문 서적 알려줘.",
+        "domain_levels": {
+            "데이터베이스": 5
+        },
+        "expected_sub_category": "데이터베이스",
+        "expected_topic": "NoSQL, Redis, MongoDB",
+        "expected_target_level": 5
+    },
+    {
+        "id": 19,
+        "scenario": "기초 하향",
+        "query": "애자일, 스크럼 이런 용어 많이 쓰던데 뭔지 하나도 모르겠어. 개발 프로젝트 관리 입문 책.",
+        "domain_levels": {},
+        "expected_sub_category": "개발방법론",
+        "expected_topic": "애자일, 스크럼 기초",
+        "expected_target_level": 1
+    },
+    {
+        "id": 20,
+        "scenario": "심화 상향",
+        "query": "클린 코드, 리팩토링, TDD 적용해서 아키텍처 개선하는 시니어급 개발방법론 책.",
+        "domain_levels": {
+            "개발방법론": 7
+        },
+        "expected_sub_category": "개발방법론",
+        "expected_topic": "클린 코드, TDD, 아키텍처 설계",
+        "expected_target_level": 8
+    },
+    {
+        "id": 21,
+        "scenario": "특정 키워드",
+        "query": "깃(Git) 브랜치 전략이나 CI/CD 파이프라인 구축하는 데브옵스 쪽 방법론 책.",
+        "domain_levels": {
+            "개발방법론": 4
+        },
+        "expected_sub_category": "개발방법론",
+        "expected_topic": "Git, CI/CD, DevOps",
+        "expected_target_level": 5
+    },
+    {
+        "id": 22,
+        "scenario": "기초 하향",
+        "query": "프론트랑 백엔드 통신하는 것도 모르는 뉴비야. 스프링 부트로 게시판 만드는 튜토리얼 책.",
+        "domain_levels": {
+            "웹프로그래밍": 1
+        },
+        "expected_sub_category": "웹프로그래밍",
+        "expected_topic": "웹 개발 입문, 스프링 부트 기초",
+        "expected_target_level": 1
+    },
+    {
+        "id": 23,
+        "scenario": "심화 상향",
+        "query": "Node.js로 백엔드 짜는데 대용량 트래픽 처리나 MSA 아키텍처 적용 실무서 추천해줘.",
+        "domain_levels": {
+            "웹프로그래밍": 6
+        },
+        "expected_sub_category": "웹프로그래밍",
+        "expected_topic": "대용량 트래픽, 백엔드 MSA",
+        "expected_target_level": 8
+    },
+    {
+        "id": 24,
+        "scenario": "단어 혼동",
+        "query": "자바 말고, 타입스크립트로 프론트엔드 리액트(React) 개발하는 웹 프로그래밍 책.",
+        "domain_levels": {
+            "웹프로그래밍": 4
+        },
+        "expected_sub_category": "웹프로그래밍",
+        "expected_topic": "React, TypeScript",
+        "expected_target_level": 4
+    },
+    {
+        "id": 25,
+        "scenario": "기초 하향",
+        "query": "코딩 테스트 준비하려고 파이썬 처음 문법부터 공부하려는데 쉽고 예제 많은 책.",
+        "domain_levels": {
+            "프로그래밍 언어": 0
+        },
+        "expected_sub_category": "프로그래밍 언어",
+        "expected_topic": "파이썬 기초, 문법 입문",
+        "expected_target_level": 1
+    },
+    {
+        "id": 26,
+        "scenario": "심화 상향",
+        "query": "C++ 11/14 모던 문법 다루고 메모리 관리까지 빡세게 파고드는 심화 언어 책.",
+        "domain_levels": {
+            "프로그래밍 언어": 7
+        },
+        "expected_sub_category": "프로그래밍 언어",
+        "expected_topic": "Modern C++, 메모리 관리",
+        "expected_target_level": 8
+    },
+    {
+        "id": 27,
+        "scenario": "단어 혼동",
+        "query": "앱 개발하는 자바 말고, 순수하게 자바(Java) 언어 자체의 객체지향 원리를 다룬 책.",
+        "domain_levels": {
+            "프로그래밍 언어": 5
+        },
+        "expected_sub_category": "프로그래밍 언어",
+        "expected_topic": "Java 객체지향, 언어 원리",
+        "expected_target_level": 5
+    },
+    {
+        "id": 28,
+        "scenario": "기초 하향",
+        "query": "안드로이드랑 iOS 둘 다 만들어보고 싶어. 플러터(Flutter) 처음 해보는 사람용 책.",
+        "domain_levels": {},
+        "expected_sub_category": "모바일프로그래밍",
+        "expected_topic": "Flutter 기초, 크로스플랫폼",
+        "expected_target_level": 1
+    },
+    {
+        "id": 29,
+        "scenario": "심화 상향",
+        "query": "Swift로 앱 출시는 해봤음. 이제 RxSwift나 MVVM 아키텍처 다루는 iOS 심화서 추천좀.",
+        "domain_levels": {
+            "모바일프로그래밍": 6
+        },
+        "expected_sub_category": "모바일프로그래밍",
+        "expected_topic": "iOS 심화, RxSwift, MVVM",
+        "expected_target_level": 8
+    },
+    {
+        "id": 30,
+        "scenario": "단어 혼동",
+        "query": "웹 앱 말고, 스위프트(Swift)나 코틀린(Kotlin) 네이티브 모바일 프로그래밍 책으로 추천해.",
+        "domain_levels": {
+            "모바일프로그래밍": 5
+        },
+        "expected_sub_category": "모바일프로그래밍",
+        "expected_topic": "네이티브 앱 개발, Swift, Kotlin",
+        "expected_target_level": 5
+    }
+]

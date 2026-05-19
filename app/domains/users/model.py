@@ -1,3 +1,6 @@
+from typing import Dict
+from pydantic import BaseModel, Field
+
 from sqlalchemy.orm import Mapped, mapped_column,relationship
 from sqlalchemy import String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -21,3 +24,7 @@ class User(Base):
     # 매핑: User에서 바로 ReadBook과 Recommendation에 접근가능
     read_books: Mapped[list["ReadBook"]] = relationship(cascade="all, delete-orphan")
     recommendations: Mapped[list["Recommendation"]] = relationship(cascade="all, delete-orphan")
+    
+class MockUser(BaseModel):
+    id: int = Field(default=9999) # 테스트용 고정 ID
+    domain_levels: Dict[str, int] = Field(default_factory=dict)

@@ -1,15 +1,21 @@
 """
-embedder.py — enriched_books.json → embedded_books.json
+embedder.py — enriched_books.json → embedded_books_v2_no_category.json
 
-enriched_books.json을 읽어 팀장 확정 벡터화 포맷으로 텍스트를 조합한 뒤,
+enriched_books.json을 읽어 벡터화 포맷(v2 - 카테고리 제외)으로 텍스트를 조합한 뒤,
 OpenAI text-embedding-3-small 모델로 1536차원 임베딩 벡터를 생성한다.
+
+v2 변경 사항:
+    카테고리(sub_category)를 임베딩 텍스트에서 제외.
+    카테고리는 SQL WHERE 절에서 정형 필터링하므로, 임베딩에서 제거하여
+    벡터 유사도 계산의 노이즈를 최소화한다.
+    난이도(difficulty)는 유지하여 의미 기반 유사도에 활용한다.
 
 실행 방법:
     cd BE/crawler
     python scripts/embedder.py
 
 입력: data/enriched_books.json
-출력: data/embedded_books.json
+출력: data/embedded_books_v2_no_category.json
 """
 
 import asyncio
@@ -30,7 +36,7 @@ MAX_CONCURRENT = 3                            # 동시 API 호출 수
 # 경로 (crawler/ 기준 상대 경로)
 BASE_DIR = Path(__file__).resolve().parent.parent  # crawler/
 INPUT_PATH = BASE_DIR / "data" / "enriched_books.json"
-OUTPUT_PATH = BASE_DIR / "data" / "embedded_books.json"
+OUTPUT_PATH = BASE_DIR / "data" / "embedded_books_v2_no_category.json"
 
 # 로깅
 logging.basicConfig(
@@ -39,13 +45,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 벡터화 텍스트 조합 (확정 포맷)
+# 벡터화 텍스트 조합 (v2 - 카테고리 제외)
 def build_embedding_text(book: dict) -> str:
     """
-    확정 벡터화 포맷:
-    f"카테고리: {sub_category}\\n난이도: {difficulty}\\n키워드: {keywords_str}\\n줄거리: {summary}"
+    벡터화 포맷 (v2 - 카테고리 제외):
+    f"난이도: {difficulty}\\n키워드: {keywords_str}\\n줄거리: {summary}"
+
+    카테고리는 SQL WHERE 절에서 정형 필터링하므로 임베딩에서 제외하여
+    벡터 유사도 계산의 노이즈를 최소화한다.
     """
-    sub_category = book.get("sub_category", "")
     difficulty = book.get("difficulty", "")
     keywords = book.get("keywords", [])
     summary = book.get("summary", "")
@@ -53,7 +61,6 @@ def build_embedding_text(book: dict) -> str:
     keywords_str = ", ".join(keywords)
 
     return (
-        f"카테고리: {sub_category}\n"
         f"난이도: {difficulty}\n"
         f"키워드: {keywords_str}\n"
         f"줄거리: {summary}"
@@ -103,10 +110,7 @@ async def generate_all_embeddings(
     logger.info(f"임베딩 생성 완료: {len(all_embeddings)}건")
     return all_embeddings
 
-
-# ──────────────────────────────────────────────
 # 메인
-# ──────────────────────────────────────────────
 async def main():
     # .env 로드 (프로젝트 최상단 BE/.env)
     env_path = BASE_DIR.parent / ".env"
@@ -128,6 +132,10 @@ async def main():
         books = json.load(f)
 
     logger.info(f"입력 파일 로드 완료: {len(books)}권")
+
+    # 1.5) 임베딩 텍스트 샘플 확인 (포맷 변경 검증용)
+    sample_text = build_embedding_text(books[0])
+    logger.info(f"검증 — 임베딩 텍스트 샘플 (첫 번째 도서):\n{sample_text}")
 
     # 2) 임베딩 생성
     embeddings = await generate_all_embeddings(client, books)

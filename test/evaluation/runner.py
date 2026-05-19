@@ -9,7 +9,7 @@ BASE_DIR = Path(__file__).parent.resolve()
 # ⚙️ 설정값
 API_URL = "http://127.0.0.1:8000/api/recommendations/eval"
 TEST_FILE = BASE_DIR / "test_cases.json"
-OUTPUT_FILE = BASE_DIR / "runner_results_v1.csv"
+OUTPUT_FILE = BASE_DIR / "runner_results_v3.csv"
 
 # DB 커넥션 풀(보통 5~10)과 OpenAI API Rate Limit을 고려하여 5개로 제한합니다.
 MAX_CONCURRENT_REQUESTS = 5

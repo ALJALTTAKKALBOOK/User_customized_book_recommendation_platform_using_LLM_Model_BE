@@ -11,8 +11,8 @@ sys.path.append(str(BASE_DIR))
 from app.core.llm_helper import generate_json_with_llm
 
 # ⚙️ 설정값
-INPUT_FILE = Path(__file__).parent / "runner_results_v1.csv"
-OUTPUT_FILE = Path(__file__).parent / "judged_results_v1.csv"
+INPUT_FILE = Path(__file__).parent / "runner_results_v3.csv"
+OUTPUT_FILE = Path(__file__).parent / "judged_results_v3.csv"
 
 # 동시 채점 개수 제한 (API Rate Limit 방지)
 MAX_CONCURRENT_EVALS = 10

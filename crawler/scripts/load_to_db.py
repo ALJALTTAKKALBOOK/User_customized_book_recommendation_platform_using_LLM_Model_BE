@@ -31,7 +31,7 @@ REQUEST_TIMEOUT = 30.0      # 요청 타임아웃 (초)
 
 # 경로
 BASE_DIR = Path(__file__).resolve().parent.parent  # crawler/
-INPUT_PATH = BASE_DIR / "data" / "embedded_books.json"
+INPUT_PATH = BASE_DIR / "data" / "embedded_books_v2_no_category.json"
 
 # BookCreateRequest에 없는 필드 (제외 대상)
 EXCLUDE_FIELDS = {"table_of_contents", "reviews", "url", "difficulty_reason"}

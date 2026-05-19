@@ -2,7 +2,7 @@ import json
 import logging
 import numpy as np
 import time
-from typing import Dict, TypedDict, List, AsyncGenerator, Any, cast
+from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.domains.users.model import User
 from app.domains.books.model import Book
 from app.core.constants import GENRES, ALL_SUB_CATEGORIES
 from app.core.llm_helper import llm_analyzer, llm_creator, embeddings_client
+from app.domains.users.model import MockUser
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,6 @@ async def get_or_embed_categories():
 class AgentState(TypedDict):
     query: str
     domain_levels: dict[str, int]
-    user: User
     
     hyde_target_genre: NotRequired[str]  
     hyde_target_category: NotRequired[str]      
@@ -165,8 +165,6 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     
     hyde_target_genre = state.get("hyde_target_genre", "")
     hyde_target_category = state.get("hyde_target_category")
-    if not hyde_target_category:
-        hyde_target_category = hyde_target_genre
     
     hyde_difficulty_level = state.get("hyde_difficulty_level")
     hyde_summary = state.get("hyde_summary")
@@ -269,7 +267,6 @@ async def stream_book_recommendation_service(
     initial_state: AgentState = {
         "query": query,
         "domain_levels": current_user.domain_levels, 
-        "user": current_user,
     }
     
     # 🌟 핵심: 실행 시점에 DB 세션을 config로 포장해서 주입합니다.
@@ -297,14 +294,13 @@ async def stream_book_recommendation_service(
 
 async def get_book_recommendation_service_test(
     query: str, 
-    current_user: User, 
+    current_user: Union[MockUser, User],
     db: AsyncSession
 ) -> Dict[str, Any]:
     
     initial_state: AgentState = {
         "query": query,
         "domain_levels": current_user.domain_levels, 
-        "user": current_user,
     }
     
     # 🌟 테스트용 함수에도 동일하게 config 주입

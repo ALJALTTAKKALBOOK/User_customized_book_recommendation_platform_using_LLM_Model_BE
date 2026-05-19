@@ -115,4 +115,3 @@ embeddings_client = OpenAIEmbeddings(
     model="text-embedding-3-small",
     api_key=SecretStr(settings.OPENAI_API_KEY)  
 )
-    

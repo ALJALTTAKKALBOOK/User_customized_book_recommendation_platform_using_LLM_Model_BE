@@ -15,7 +15,7 @@ v2 변경 사항:
     python scripts/embedder.py
 
 입력: data/enriched_books.json
-출력: data/embedded_books_v2_no_category.json
+출력: data/embedded_books_v3_prompt_V2.json
 """
 
 import asyncio

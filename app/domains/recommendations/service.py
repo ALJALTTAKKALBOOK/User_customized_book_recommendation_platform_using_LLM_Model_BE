@@ -7,6 +7,7 @@ from typing_extensions import NotRequired
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy import case
 
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
@@ -84,9 +85,12 @@ class ContextAnalysisOutput(BaseModel):
     calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
 
 class HydeOutput(BaseModel):
-    summary: str = Field(description="가상 도서 줄거리")
-    keywords: list[str] = Field(description="키워드")
-
+    summary: str = Field(description="가상 도서 줄거리 (200~400자)")
+    keywords: list[str] = Field(
+        description="키워드 5개: topic 2개 + approach 1~2개 + target 1~2개",
+        min_length=5,
+        max_length=5,
+    )
 
 # ---------------------------------------------------------
 # 3. 전역 Node 함수들 
@@ -150,9 +154,42 @@ async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     
     if not target_category:
         target_category = state.get("hyde_target_genre", "IT")
-        
+    
+    # ⚠️ 키워드 스키마는 crawler/scripts/enrich_data.py의 SYSTEM_PROMPT와
+    #    반드시 동일하게 유지할 것. 한 쪽 수정 시 다른 쪽도 같이 수정.
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "너는 최고의 도서 큐레이터야..."),
+        ("system",
+         "너는 도서 큐레이터야. 유저의 질문과 타겟 정보를 바탕으로, "
+         "DB 벡터 검색에 사용할 '이상적인 가상 도서'를 생성해.\n\n"
+         "[줄거리 작성 규칙]\n"
+         "- 분량: 200~400자. 실제 도서 소개글처럼 자연스러운 한국어로.\n"
+         "- 난이도 톤:\n"
+         "  · 0~2: 입문자 톤 (\"~를 처음 접하는 사람도 이해할 수 있도록\")\n"
+         "  · 3~5: 중급 톤 (\"실무에서 자주 마주치는 ~를 단계별로 학습\")\n"
+         "  · 6~8: 심화 톤 (\"~의 내부 동작 원리와 설계 철학을 깊이 다룬다\")\n"
+         "  · 9~10: 전문가 톤 (\"최신 연구 동향과 ~를 분석한 전문서\")\n"
+         "- 타겟 카테고리의 핵심 개념을 1~2개 자연스럽게 포함하라.\n"
+         "- 유저 질문의 의도(예: '쉬운', '실전', '역사', '그림으로')를 반드시 줄거리에 반영하라.\n\n"
+         "[키워드 추출 규칙]\n"
+         "정확히 5개의 키워드를 아래 3개 축으로 추출하라.\n\n"
+         "1. 주제 (topic) — 2개: 책이 다루는 핵심 개념/기술/언어를 구체적으로.\n\n"
+         "2. 접근방식 (approach) — 1~2개. 아래 어휘에서만 선택:\n"
+         "   [\"역사적 관점\", \"사례 중심\", \"이론 중심\", \"실습 중심\", \"개념 정리\",\n"
+         "    \"튜토리얼\", \"레퍼런스\", \"프로젝트 기반\", \"비교 분석\", \"시각적 설명\",\n"
+         "    \"딥다이브\", \"문제 해결 중심\"]\n\n"
+         "3. 대상/성격 (target) — 1~2개. 아래 어휘에서만 선택:\n"
+         "   [\"비전공자 교양서\", \"입문자용\", \"중급자용\", \"실무자용\", \"연구자용\",\n"
+         "    \"수험서\", \"참고서\", \"기초 학습서\", \"심화 학습서\"]\n\n"
+         "[질문 의도 → 키워드 매핑 힌트]\n"
+         "- \"쉬운/입문/처음/노베이스\" → target은 \"입문자용\" 또는 \"비전공자 교양서\".\n"
+         "- \"심화/실전/실무/딥다이브\" → target은 \"실무자용\" 또는 \"심화 학습서\", approach는 \"딥다이브\".\n"
+         "- \"역사/사례\" → approach에 \"역사적 관점\" 또는 \"사례 중심\".\n"
+         "- \"그림/시각적/직관적\" → approach에 \"시각적 설명\".\n"
+         "- \"튜토리얼/예제/단계별\" → approach에 \"튜토리얼\" 또는 \"실습 중심\".\n\n"
+         "[중요]\n"
+         "- approach/target은 반드시 위 어휘 목록 안에서만 선택. 새 표현 금지.\n"
+         "- 5개 키워드를 라벨 없이 하나의 리스트로 합쳐서 반환하라."
+        ),
         ("user", "유저 질문: {query}\n타겟 카테고리: {category}\n타겟 난이도: {level}")
     ])
 
@@ -191,13 +228,13 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     
     query_vector = await embeddings_client.aembed_query(hyde_text_to_embed)
 
-    stmt = select(Book)
-    if hyde_target_category:
-        stmt = stmt.where(Book.sub_category == hyde_target_category)
-    else:
-        stmt = stmt.where(Book.genre == hyde_target_genre)
+    distance = Book.embedding.cosine_distance(query_vector)
+
+    weighted_distance = distance - case(
+    (Book.sub_category == hyde_target_category, 0.15),
+    else_=0.0)
         
-    stmt = stmt.order_by(Book.embedding.cosine_distance(query_vector)).limit(3)
+    stmt = select(Book).order_by(weighted_distance).limit(3)
 
     # 안전하게 가져온 DB 세션 사용
     result = await db_session.execute(stmt)

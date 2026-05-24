@@ -18,14 +18,17 @@ OUTPUT_PATH = os.path.join(DATA_DIR, 'enriched_books.json')
 # 대량 처리 설정
 SAVE_INTERVAL = 100     # 중간 저장 간격 (권)
 MAX_RETRIES = 3         # LLM 호출 실패 시 재시도 횟수
-RETRY_DELAY = 5         # 재시도 대기 시간 (초)
+RETRY_DELAY = 10         # 재시도 대기 시간 (초)
+CONCURRENT_LIMIT = 3   # 동시 처리할 도서 수
 
 # ──────────────────────────────────────────────
 # LLM 프롬프트
 # ──────────────────────────────────────────────
+# ⚠️ 이 키워드 스키마는 app/domains/recommendations/...의 generate_hyde_node와
+#    반드시 동일하게 유지해야 한다. 한 쪽 수정 시 다른 쪽도 반드시 같이 수정할 것.
 SYSTEM_PROMPT = """너는 도서 분석 전문가야. 주어진 도서 정보를 분석하여 난이도와 핵심 키워드를 JSON으로 응답해.
 
-규칙:
+[난이도 - difficulty]
 - difficulty: 0~10 정수. 극단적인 점수를 주는 것을 두려워하지 마라. 쉬운 책은 반드시 낮은 점수를, 어려운 책은 반드시 높은 점수를 줘야 한다. 중간값(4~6)에 편중하지 마라.
 
 [난이도 앵커 기준]
@@ -42,11 +45,44 @@ SYSTEM_PROMPT = """너는 도서 분석 전문가야. 주어진 도서 정보를
   10: 최고 전문가, 논문 수준의 난해한 전문서
 
 - difficulty_reason: 난이도를 그렇게 판정한 근거를 한 문장으로 설명.
-- keywords: 도서의 핵심 주제/개념을 나타내는 구체적 키워드 3~5개. 너무 일반적인 단어는 제외.
+
+[키워드 - keywords]
+도서를 다각도로 표현하는 키워드 정확히 5개를 추출한다. 아래 3개 축을 반드시 모두 포함시켜라.
+
+1. 주제 (topic) — 2개
+   책이 다루는 핵심 개념/기술/언어. 구체적으로 작성하라.
+   예: "인공지능", "기계학습", "리액트", "운영체제", "TCP/IP", "SQL", "디자인 패턴"
+   ※ 너무 일반적인 단어("프로그래밍", "컴퓨터")는 피하라.
+
+2. 접근방식 (approach) — 1~2개
+   책의 서술 관점/형식. 아래 어휘 중에서만 선택하라:
+   ["역사적 관점", "사례 중심", "이론 중심", "실습 중심", "개념 정리",
+    "튜토리얼", "레퍼런스", "프로젝트 기반", "비교 분석", "시각적 설명",
+    "딥다이브", "문제 해결 중심"]
+
+3. 대상/성격 (target) — 1~2개
+   독자층 또는 책의 성격. 아래 어휘 중에서만 선택하라:
+   ["비전공자 교양서", "입문자용", "중급자용", "실무자용", "연구자용",
+    "수험서", "참고서", "기초 학습서", "심화 학습서"]
+
+[중요 지침]
+- 줄거리/목차/리뷰에 "역사", "사례", "처음 배우는", "그림으로", "쉽게" 같은 표현이 보이면 반드시 approach/target에 명시적으로 반영하라.
+- 메타 키워드("역사적 관점", "비전공자 교양서")가 "일반적"이라는 이유로 빼지 마라. 그게 책의 정체성이다.
+- 5개를 하나의 리스트로 합쳐서 응답하라. 축 라벨은 붙이지 않는다.
+- approach/target은 반드시 위 어휘 목록 안에서만 선택하라. 새 표현을 만들지 마라.
+
+[키워드 예시]
+- "기계는 어떻게 생각하는가?" (AI 역사 5가지 사건을 비전공자에게 설명)
+  → ["인공지능", "기계학습", "역사적 관점", "사례 중심", "비전공자 교양서"]
+- "모던 리액트 Deep Dive" (리액트 내부 동작 원리 심화)
+  → ["리액트", "프론트엔드", "이론 중심", "딥다이브", "실무자용"]
+- "혼자 공부하는 파이썬" (파이썬 기초 문법 단계별)
+  → ["파이썬", "프로그래밍 언어", "튜토리얼", "실습 중심", "입문자용"]
+- "OSI 7계층 그림으로 이해하기" (네트워크 기초 시각화)
+  → ["네트워크 기초", "OSI 7계층", "시각적 설명", "개념 정리", "입문자용"]
 
 JSON 형식으로만 응답해:
-{"difficulty": 5, "difficulty_reason": "근거 설명", "keywords": ["키워드1", "키워드2", "키워드3"]}"""
-
+{"difficulty": 5, "difficulty_reason": "근거 설명", "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]}"""
 
 # ──────────────────────────────────────────────
 # 리뷰 필터링 (규칙 기반)
@@ -212,47 +248,67 @@ async def main():
 
     # 처리 대상 필터링
     remaining = [b for b in books if b.get("isbn", "") not in enriched_isbns]
-    print(f"처리 대상: {len(remaining)}권\n")
+    print(f"처리 대상: {len(remaining)}권")
+    print(f"동시 처리: {CONCURRENT_LIMIT}권\n")
 
     if not remaining:
         print("모든 도서가 이미 처리되었습니다.")
         return
 
-    # 3. 각 도서에 대해 LLM 호출
-    save_counter = len(enriched_books)
-    success_count = 0
+    # 3. 병렬 처리 준비
+    sem = asyncio.Semaphore(CONCURRENT_LIMIT)
+    save_lock = asyncio.Lock()  # 중간 저장 시 동시 쓰기 방지
+    completed_count = [0]  # 완료 카운터 (리스트로 감싸서 클로저에서 mutate 가능)
+    total = len(remaining)
 
-    for i, book in enumerate(remaining):
-        title_short = book['title'][:40]
-        print(f"  ({i+1}/{len(remaining)}) {title_short}")
+    async def process_one(book, index):
+        """한 권을 처리하고 결과를 enriched_books에 추가한다."""
+        async with sem:  # 동시 실행 수 제한
+            title_short = book['title'][:40]
 
-        difficulty, reason, keywords = await analyze_book(book)
-        print(f"    → 난이도: {difficulty} ({reason[:50]})")
-        print(f"    → 키워드: {keywords}")
+            difficulty, reason, keywords = await analyze_book(book)
 
-        # 기존 데이터에 추가
-        book["difficulty"] = difficulty
-        book["difficulty_reason"] = reason
-        book["keywords"] = keywords
-        enriched_books.append(book)
-        save_counter += 1
+            book["difficulty"] = difficulty
+            book["difficulty_reason"] = reason
+            book["keywords"] = keywords
 
-        if keywords:
-            success_count += 1
+            async with save_lock:
+                enriched_books.append(book)
+                completed_count[0] += 1
+                done = completed_count[0]
 
-        # SAVE_INTERVAL마다 중간 저장
-        if save_counter % SAVE_INTERVAL == 0:
-            save_enriched(enriched_books)
-            print(f"\n  💾 중간 저장 완료: {len(enriched_books)}권\n")
+                # 진행률 출력 (10권마다)
+                if done % 10 == 0 or done == total:
+                    print(f"  [{done}/{total}] {title_short} → 난이도 {difficulty}, 키워드 {len(keywords)}개")
 
-    # 4. 최종 저장
+                # 중간 저장
+                if done % SAVE_INTERVAL == 0:
+                    save_enriched(enriched_books)
+                    print(f"\n  💾 중간 저장 완료: {len(enriched_books)}권\n")
+
+            return keywords  # 성공 여부 판단용
+
+    # 4. 모든 책을 병렬로 처리
+    tasks = [process_one(book, i) for i, book in enumerate(remaining)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # 5. 최종 저장
     save_enriched(enriched_books)
 
-    # 5. 최종 통계
+    # 6. 통계
+    success_count = sum(1 for r in results if isinstance(r, list) and len(r) > 0)
+    error_count = sum(1 for r in results if isinstance(r, Exception))
+
     print(f"\n{'=' * 50}")
-    print(f"완료! {len(remaining)}권 중 {success_count}권 성공")
+    print(f"완료! {len(remaining)}권 중 {success_count}권 성공, {error_count}권 실패")
     print(f"전체 enriched: {len(enriched_books)}권")
     print(f"저장 위치: {OUTPUT_PATH}")
+
+    if error_count > 0:
+        print(f"\n[실패한 작업]")
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                print(f"  - {remaining[i]['title'][:40]}: {r}")
 
     print(f"\n[난이도 분포]")
     difficulties = [b["difficulty"] for b in enriched_books]

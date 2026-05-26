@@ -1,21 +1,23 @@
 """
-embedder.py — enriched_books.json → embedded_books_v2_no_category.json
+embedder.py — enriched_books.json → embedded_books_v3_short.json
 
-enriched_books.json을 읽어 벡터화 포맷(v2 - 카테고리 제외)으로 텍스트를 조합한 뒤,
+enriched_books.json을 읽어 벡터화 포맷(v3 - short_summary)으로 텍스트를 조합한 뒤,
 OpenAI text-embedding-3-small 모델로 1536차원 임베딩 벡터를 생성한다.
 
-v2 변경 사항:
-    카테고리(sub_category)를 임베딩 텍스트에서 제외.
-    카테고리는 SQL WHERE 절에서 정형 필터링하므로, 임베딩에서 제거하여
-    벡터 유사도 계산의 노이즈를 최소화한다.
-    난이도(difficulty)는 유지하여 의미 기반 유사도에 활용한다.
+v3 변경 사항 (v1 실험):
+    임베딩 텍스트의 줄거리 필드를 long summary → short_summary로 교체.
+    summary가 길어서 키워드/난이도 가중치가 임베딩 벡터에 충분히 반영되지 않던
+    문제를 해소한다.
+
+    DB에 저장되는 summary 컬럼은 long summary 그대로 유지 (UI 표시용).
+    임베딩 벡터만 short_summary 기반.
 
 실행 방법:
     cd BE/crawler
     python scripts/embedder.py
 
-입력: data/enriched_books.json
-출력: data/embedded_books_v3_prompt_V2.json
+입력: data/enriched_books.json   (short_summary 필드 포함된 enrich 결과)
+출력: data/embedded_books_v3_short.json
 """
 
 import asyncio
@@ -36,7 +38,7 @@ MAX_CONCURRENT = 3                            # 동시 API 호출 수
 # 경로 (crawler/ 기준 상대 경로)
 BASE_DIR = Path(__file__).resolve().parent.parent  # crawler/
 INPUT_PATH = BASE_DIR / "data" / "enriched_books.json"
-OUTPUT_PATH = BASE_DIR / "data" / "embedded_books_v2_no_category.json"
+OUTPUT_PATH = BASE_DIR / "data" / "embedded_books_v3_short.json"
 
 # 로깅
 logging.basicConfig(
@@ -45,28 +47,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 벡터화 텍스트 조합 (v2 - 카테고리 제외)
+# ──────────────────────────────────────────────
+# 벡터화 텍스트 조합 (v3 - short_summary 기반)
+# ──────────────────────────────────────────────
 def build_embedding_text(book: dict) -> str:
     """
-    벡터화 포맷 (v2 - 카테고리 제외):
-    f"난이도: {difficulty}\\n키워드: {keywords_str}\\n줄거리: {summary}"
+    벡터화 포맷 (v3):
+    f"난이도: {difficulty}\\n키워드: {keywords_str}\\n줄거리: {short_summary}"
 
-    카테고리는 SQL WHERE 절에서 정형 필터링하므로 임베딩에서 제외하여
-    벡터 유사도 계산의 노이즈를 최소화한다.
+    long summary가 키워드 토큰 수의 15~20배라 임베딩 벡터에서 키워드 의미가
+    묻히는 문제를 short_summary(약 50자)로 해소한다.
+
+    DB의 summary 컬럼은 long summary 그대로 둠 (UI용). embedding만 short 기반.
     """
     difficulty = book.get("difficulty", "")
     keywords = book.get("keywords", [])
-    summary = book.get("summary", "")
+    short_summary = book.get("short_summary", "")
 
     keywords_str = ", ".join(keywords)
 
     return (
         f"난이도: {difficulty}\n"
         f"키워드: {keywords_str}\n"
-        f"줄거리: {summary}"
+        f"줄거리: {short_summary}"
     )
 
+# ──────────────────────────────────────────────
 # 임베딩 생성 (배치 + 비동기)
+# ──────────────────────────────────────────────
 async def embed_batch(
     client: AsyncOpenAI,
     texts: list[str],
@@ -110,7 +118,9 @@ async def generate_all_embeddings(
     logger.info(f"임베딩 생성 완료: {len(all_embeddings)}건")
     return all_embeddings
 
+# ──────────────────────────────────────────────
 # 메인
+# ──────────────────────────────────────────────
 async def main():
     # .env 로드 (프로젝트 최상단 BE/.env)
     env_path = BASE_DIR.parent / ".env"
@@ -133,7 +143,17 @@ async def main():
 
     logger.info(f"입력 파일 로드 완료: {len(books)}권")
 
-    # 1.5) 임베딩 텍스트 샘플 확인 (포맷 변경 검증용)
+    # 1.5) short_summary 누락 사전 검증
+    missing_short = [b for b in books if not b.get("short_summary")]
+    if missing_short:
+        logger.error(
+            f"short_summary가 누락된 책이 {len(missing_short)}권 있습니다. "
+            f"enrich_data.py를 먼저 다시 실행하세요."
+        )
+        logger.error(f"  예: {missing_short[0]['title']}")
+        sys.exit(1)
+
+    # 1.6) 임베딩 텍스트 샘플 확인 (포맷 변경 검증용)
     sample_text = build_embedding_text(books[0])
     logger.info(f"검증 — 임베딩 텍스트 샘플 (첫 번째 도서):\n{sample_text}")
 

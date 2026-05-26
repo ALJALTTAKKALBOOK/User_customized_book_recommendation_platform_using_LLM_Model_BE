@@ -22,7 +22,7 @@ RETRY_DELAY = 10         # 재시도 대기 시간 (초)
 CONCURRENT_LIMIT = 3   # 동시 처리할 도서 수
 
 # ──────────────────────────────────────────────
-# LLM 프롬프트
+# LLM 프롬프트 (1) - 난이도/키워드 추출
 # ──────────────────────────────────────────────
 # ⚠️ 이 키워드 스키마는 app/domains/recommendations/...의 generate_hyde_node와
 #    반드시 동일하게 유지해야 한다. 한 쪽 수정 시 다른 쪽도 반드시 같이 수정할 것.
@@ -85,6 +85,39 @@ JSON 형식으로만 응답해:
 {"difficulty": 5, "difficulty_reason": "근거 설명", "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]}"""
 
 # ──────────────────────────────────────────────
+# LLM 프롬프트 (2) - short_summary 생성  [v1 신규]
+# ──────────────────────────────────────────────
+# short_summary는 임베딩 텍스트 생성 전용. 키워드/난이도 추출과는 독립이다.
+# v2에서는 이 short_summary가 키워드/난이도 추출의 입력으로도 사용될 예정.
+SHORT_SUMMARY_PROMPT = """너는 도서 요약 전문가야. 주어진 책 정보를 100자 이내의 한 문장으로 압축한다.
+
+[작성 규칙]
+- 100자 이내, 한 문장.
+- 다음 3가지를 반드시 포함:
+  1. 주제 (어떤 기술/개념을 다루는가)
+  2. 대상 (누구를 위한 책인가 — 입문자/실무자/연구자/비전공자 등)
+  3. 접근법 (어떻게 가르치는가 — 사례 중심/실습 중심/이론 중심/역사적 관점/튜토리얼 등)
+
+[절대 금지]
+- 출판사 마케팅 문구 ("최고의", "필독서", "베스트셀러", "쉽게 배우는", "당신의 인생을 바꿀")
+- 추상적 표현 ("새 시대의", "혁신적인", "독보적인")
+- 단순 칭찬어 ("정말 좋은", "훌륭한")
+
+[좋은 예시]
+- "AI의 5가지 역사적 사건을 통해 인공지능과 기계학습의 발전사를 비전공자에게 설명하는 교양서."
+- "리액트의 내부 동작 원리와 렌더링 메커니즘을 실무자 대상으로 심화 분석한 책."
+- "플러터로 안드로이드와 iOS 앱을 동시 개발하는 방법을 입문자에게 단계별로 가르치는 튜토리얼."
+- "OSI 7계층과 TCP/IP 프로토콜을 그림과 비유로 설명한 네트워크 입문서."
+
+[나쁜 예시 - 피할 것]
+- "정말 멋진 책으로, 모든 개발자가 꼭 읽어야 할 필독서." (마케팅 문구, 정보 없음)
+- "당신의 인생을 바꿀 프로그래밍 책." (추상적, 무엇을 가르치는지 불명)
+- "이 책은 좋은 책입니다." (정보 없음)
+
+JSON 형식으로만 응답:
+{"short_summary": "100자 이내 한 문장"}"""
+
+# ──────────────────────────────────────────────
 # 리뷰 필터링 (규칙 기반)
 # ──────────────────────────────────────────────
 JUNK_PATTERNS = [
@@ -123,7 +156,7 @@ def filter_reviews(reviews):
 
 
 # ──────────────────────────────────────────────
-# User Prompt 생성
+# User Prompt 생성 (1) - 난이도/키워드용
 # ──────────────────────────────────────────────
 def build_user_prompt(book):
     """도서 정보를 LLM에 전달할 프롬프트로 변환한다."""
@@ -155,7 +188,28 @@ def build_user_prompt(book):
 
 
 # ──────────────────────────────────────────────
-# LLM 호출 (재시도 포함)
+# User Prompt 생성 (2) - short_summary용  [v1 신규]
+# ──────────────────────────────────────────────
+def build_short_summary_input(book):
+    """short_summary 생성용 LLM 입력.
+    리뷰는 주관적 노이즈가 클 수 있어 제외, 목차+책소개만 사용한다.
+    """
+    parts = [
+        f"제목: {book['title']}",
+        f"저자: {book['author']}",
+        f"카테고리: {book['sub_category']}",
+        f"\n[원본 책소개]\n{book['summary']}",
+    ]
+    toc = book.get('table_of_contents') or ''
+    if toc.strip():
+        if len(toc) > 1500:
+            toc = toc[:1500] + "\n... (이하 생략)"
+        parts.append(f"\n[목차]\n{toc}")
+    return "\n".join(parts)
+
+
+# ──────────────────────────────────────────────
+# LLM 호출 (1) - 난이도/키워드 추출
 # ──────────────────────────────────────────────
 async def analyze_book(book):
     """한 권의 도서에 대해 LLM으로 difficulty와 keywords를 생성한다."""
@@ -191,11 +245,52 @@ async def analyze_book(book):
 
         except Exception as e:
             if attempt < MAX_RETRIES:
-                print(f"    [재시도 {attempt}/{MAX_RETRIES}] {e}")
+                print(f"    [재시도 {attempt}/{MAX_RETRIES}] analyze: {e}")
                 await asyncio.sleep(RETRY_DELAY)
             else:
-                print(f"    [에러] LLM 호출 최종 실패: {e}")
+                print(f"    [에러] analyze 최종 실패: {e}")
                 return 5, "LLM 호출 실패로 기본값 사용", []
+
+
+# ──────────────────────────────────────────────
+# LLM 호출 (2) - short_summary 생성  [v1 신규]
+# ──────────────────────────────────────────────
+async def generate_short_summary(book):
+    """한 권의 도서에 대해 100자 이내 short_summary를 생성한다.
+    임베딩 텍스트 전용. 키워드/난이도 추출과는 독립적인 LLM 호출.
+    """
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": SHORT_SUMMARY_PROMPT},
+                    {"role": "user", "content": build_short_summary_input(book)}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3,
+            )
+
+            result = json.loads(response.choices[0].message.content)
+            short = result.get("short_summary", "").strip()
+
+            # 길이 검사 및 fallback
+            if len(short) > 120:
+                print(f"    [경고] short_summary 길이 초과: {len(short)}자 → 100자로 절단")
+                short = short[:100]
+            if not short:
+                print(f"    [경고] short_summary 비어있음 → 제목으로 대체")
+                short = book['title']
+
+            return short
+
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                print(f"    [재시도 {attempt}/{MAX_RETRIES}] short_summary: {e}")
+                await asyncio.sleep(RETRY_DELAY)
+            else:
+                print(f"    [에러] short_summary 최종 실패: {e}")
+                return book['title']  # fallback
 
 
 # ──────────────────────────────────────────────
@@ -212,8 +307,14 @@ def load_existing_enriched():
 
 
 def get_enriched_isbns(books):
-    """이미 처리된 도서의 ISBN set을 반환한다."""
-    return set(book.get("isbn", "") for book in books)
+    """이미 처리된 도서의 ISBN set을 반환한다.
+    short_summary까지 모두 있는 책만 '완료'로 간주한다.
+    """
+    return set(
+        book.get("isbn", "")
+        for book in books
+        if book.get("short_summary")  # short_summary 있어야 완료
+    )
 
 
 def save_enriched(books):
@@ -228,7 +329,7 @@ def save_enriched(books):
 # ──────────────────────────────────────────────
 async def main():
     print("=" * 50)
-    print("BookFit 크롤러 - Step 3.5: 난이도/키워드 생성")
+    print("BookFit 크롤러 - Step 3.5: 난이도/키워드/short_summary 생성")
     print("=" * 50)
 
     # 1. 데이터 로드
@@ -262,15 +363,22 @@ async def main():
     total = len(remaining)
 
     async def process_one(book, index):
-        """한 권을 처리하고 결과를 enriched_books에 추가한다."""
+        """한 권을 처리하고 결과를 enriched_books에 추가한다.
+        두 LLM 호출(analyze + short_summary)을 병렬로 실행한다.
+        """
         async with sem:  # 동시 실행 수 제한
             title_short = book['title'][:40]
 
-            difficulty, reason, keywords = await analyze_book(book)
+            # 두 LLM 호출을 병렬로 (총 시간은 단일 호출과 비슷)
+            (difficulty, reason, keywords), short_summary = await asyncio.gather(
+                analyze_book(book),
+                generate_short_summary(book)
+            )
 
             book["difficulty"] = difficulty
             book["difficulty_reason"] = reason
             book["keywords"] = keywords
+            book["short_summary"] = short_summary
 
             async with save_lock:
                 enriched_books.append(book)
@@ -279,7 +387,10 @@ async def main():
 
                 # 진행률 출력 (10권마다)
                 if done % 10 == 0 or done == total:
-                    print(f"  [{done}/{total}] {title_short} → 난이도 {difficulty}, 키워드 {len(keywords)}개")
+                    print(
+                        f"  [{done}/{total}] {title_short} → "
+                        f"난이도 {difficulty}, 키워드 {len(keywords)}개, short {len(short_summary)}자"
+                    )
 
                 # 중간 저장
                 if done % SAVE_INTERVAL == 0:
@@ -320,6 +431,18 @@ async def main():
                  7: "고급", 8: "고급",
                  9: "전문가", 10: "전문가"}.get(level, "")
         print(f"  난이도 {level} ({label}): {count}권")
+
+    # ── v1 신규: short_summary 길이 분포
+    print(f"\n[short_summary 길이 분포]")
+    short_lengths = [len(b.get('short_summary', '')) for b in enriched_books]
+    if short_lengths:
+        avg_len = sum(short_lengths) / len(short_lengths)
+        over_100 = sum(1 for l in short_lengths if l > 100)
+        empty = sum(1 for l in short_lengths if l == 0)
+        print(f"  평균: {avg_len:.1f}자")
+        print(f"  최소: {min(short_lengths)}자  /  최대: {max(short_lengths)}자")
+        print(f"  100자 초과: {over_100}권 ({over_100/len(short_lengths)*100:.1f}%)")
+        print(f"  비어있음: {empty}권")
 
     print(f"\n[리뷰 필터링 통계]")
     total_raw = sum(len(b.get('reviews', []) or []) for b in books)

@@ -84,8 +84,13 @@ class ContextAnalysisOutput(BaseModel):
     )
     calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
 
+# v1 변경: summary 분량을 200~400자 → 100자 이내로 축소.
+# DB의 임베딩이 short_summary(약 50자) 기반으로 만들어졌으므로,
+# HyDE도 같은 차원으로 가상 책을 생성해야 벡터 유사도 비교가 의미를 가진다.
 class HydeOutput(BaseModel):
-    summary: str = Field(description="가상 도서 줄거리 (200~400자)")
+    summary: str = Field(
+        description="가상 도서 핵심 요약 (100자 이내, 주제+대상+접근법 한 문장)"
+    )
     keywords: list[str] = Field(
         description="키워드 5개: topic 2개 + approach 1~2개 + target 1~2개",
         min_length=5,
@@ -157,19 +162,33 @@ async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     
     # ⚠️ 키워드 스키마는 crawler/scripts/enrich_data.py의 SYSTEM_PROMPT와
     #    반드시 동일하게 유지할 것. 한 쪽 수정 시 다른 쪽도 같이 수정.
+    #
+    # v1 변경: 줄거리 분량을 200~400자 → 100자 이내로 축소.
+    # DB의 임베딩이 short_summary(약 50자) 기반이므로, HyDE도 같은 차원으로
+    # 생성해야 벡터 유사도 비교가 의미를 가진다.
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "너는 도서 큐레이터야. 유저의 질문과 타겟 정보를 바탕으로, "
          "DB 벡터 검색에 사용할 '이상적인 가상 도서'를 생성해.\n\n"
          "[줄거리 작성 규칙]\n"
-         "- 분량: 200~400자. 실제 도서 소개글처럼 자연스러운 한국어로.\n"
-         "- 난이도 톤:\n"
-         "  · 0~2: 입문자 톤 (\"~를 처음 접하는 사람도 이해할 수 있도록\")\n"
-         "  · 3~5: 중급 톤 (\"실무에서 자주 마주치는 ~를 단계별로 학습\")\n"
-         "  · 6~8: 심화 톤 (\"~의 내부 동작 원리와 설계 철학을 깊이 다룬다\")\n"
-         "  · 9~10: 전문가 톤 (\"최신 연구 동향과 ~를 분석한 전문서\")\n"
+         "- 분량: 100자 이내, 한 문장.\n"
+         "- 다음 3가지를 반드시 포함:\n"
+         "  1. 주제 (어떤 기술/개념)\n"
+         "  2. 대상 (누구를 위한 — 입문자/실무자/연구자/비전공자 등)\n"
+         "  3. 접근법 (어떻게 — 사례 중심/실습 중심/이론 중심/역사적 관점/튜토리얼 등)\n"
+         "- 난이도별 어휘 선택 (짧은 분량이므로 어휘 하나로 톤을 구분):\n"
+         "  · 0~2: \"비전공자에게\", \"~를 처음 접하는 사람에게\", \"기초부터 단계별로\"\n"
+         "  · 3~5: \"실무에서 자주 마주치는 ~를 단계별로\", \"입문자에게 실습 중심으로\"\n"
+         "  · 6~8: \"~의 내부 동작 원리를 심화 분석한\", \"실무자에게 딥다이브로\"\n"
+         "  · 9~10: \"최신 연구 동향과 ~를 분석한\", \"연구자/전문가에게 심화 학습서로\"\n"
          "- 타겟 카테고리의 핵심 개념을 1~2개 자연스럽게 포함하라.\n"
-         "- 유저 질문의 의도(예: '쉬운', '실전', '역사', '그림으로')를 반드시 줄거리에 반영하라.\n\n"
+         "- 유저 질문의 의도(예: '쉬운', '실전', '역사', '그림으로')를 반드시 줄거리에 반영하라.\n"
+         "- 마케팅 문구 금지 ('최고의', '필독서', '쉽게 배우는').\n"
+         "- 추상적 표현 금지 ('당신의 인생을 바꿀', '혁신적인').\n\n"
+         "[줄거리 좋은 예시]\n"
+         "- \"AI의 5가지 역사적 사건을 통해 인공지능과 기계학습의 발전사를 비전공자에게 설명하는 교양서.\"\n"
+         "- \"리액트의 내부 동작 원리와 렌더링 메커니즘을 실무자 대상으로 심화 분석한 책.\"\n"
+         "- \"플러터로 안드로이드와 iOS 앱을 동시 개발하는 방법을 입문자에게 단계별로 가르치는 튜토리얼.\"\n\n"
          "[키워드 추출 규칙]\n"
          "정확히 5개의 키워드를 아래 3개 축으로 추출하라.\n\n"
          "1. 주제 (topic) — 2개: 책이 다루는 핵심 개념/기술/언어를 구체적으로.\n\n"
@@ -223,6 +242,8 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     if not hyde_summary:
         return {"recommended_books":[]}
 
+    # v1: hyde_summary가 100자 이내 short summary로 들어오므로,
+    # DB의 short_summary 기반 임베딩과 자연스럽게 차원이 맞는다.
     keyword_str = ", ".join(hyde_keyword)
     hyde_text_to_embed = f"난이도: {hyde_difficulty_level}\n키워드: {keyword_str}\n줄거리: {hyde_summary}"
     
@@ -366,6 +387,3 @@ async def get_book_recommendation_service_test(
         "recommended_books": final_state.get("recommended_books",[]),
         "final_answer": final_state.get("final_answer", "답변 생성 실패")
     }
-    
-
-

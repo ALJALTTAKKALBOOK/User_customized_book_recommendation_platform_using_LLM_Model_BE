@@ -1,23 +1,23 @@
 """
-load_to_db.py — embedded_books_v3_short.json → POST /books/ API → DB 적재
+load_to_db.py — embedded_books_v3_improved_keywords.json → POST /books/ API → DB 적재
 
 embedded_books.json을 읽어 BookCreateRequest 형식으로 변환한 뒤,
 FastAPI 서버의 POST /books/ 엔드포인트를 호출하여 DB에 적재한다.
 
 v1 변경:
-    INPUT_PATH를 embedded_books_v2_no_category.json → embedded_books_v3_short.json
+    INPUT_PATH를 embedded_books_v2_no_category.json → embedded_books_v3_improved_keywords.json
     으로 변경. (short_summary로 임베딩된 결과 파일)
 
 선행 조건:
     1. docker-compose up -d  (PostgreSQL + pgvector 실행)
     2. uvicorn app.main:app --reload  (FastAPI 서버 실행)
-    3. embedder.py 실행 완료 (embedded_books_v3_short.json 존재)
+    3. embedder.py 실행 완료 (embedded_books_v3_improved_keywords.json 존재)
 
 실행 방법:
     cd BE/crawler
     python scripts/load_to_db.py
 
-입력: data/embedded_books_v3_short.json
+입력: data/embedded_books_v3_improved_keywords.json
 """
 
 import asyncio
@@ -36,7 +36,7 @@ REQUEST_TIMEOUT = 30.0      # 요청 타임아웃 (초)
 
 # 경로
 BASE_DIR = Path(__file__).resolve().parent.parent  # crawler/
-INPUT_PATH = BASE_DIR / "data" / "embedded_books_v3_short.json"
+INPUT_PATH = BASE_DIR / "data" / "embedded_books_v3_improved_keywords.json"
 
 # BookCreateRequest에 없는 필드 (제외 대상)
 # short_summary는 DB 스키마에 없으므로 제외. (DB의 summary 컬럼은 long summary 그대로 유지)

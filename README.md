@@ -77,27 +77,46 @@ BookFit은 "유저의 실력 레벨"과 "도서의 실질 난이도"를 연결�
 
 ```mermaid
 flowchart TD
-    subgraph PIPE["① 데이터 파이프라인 · 사전 구축"]
-        A[교보문고 도서 메타데이터 수집<br/>Playwright] -->
-        B[LLM 데이터 증강<br/>GPT-4o-mini<br/>난이도·키워드 추출]
-        B --> C[short_summary 생성<br/>100자 이내 요약]
-        C --> D[텍스트 임베딩<br/>text-embedding-3-small]
-        D --> E[(PostgreSQL + pgvector)]
+    subgraph PIPE["① 데이터 파이프라인 · 사전 구축 (오프라인)"]
+        A["교보문고 도서 메타데이터 수집<br/>(Playwright)"]
+        B["LLM 데이터 증강<br/>(GPT-4o-mini · 난이도·키워드 추출)"]
+        C["short_summary 생성<br/>(100자 이내 요약)"]
+        D["텍스트 임베딩<br/>(text-embedding-3-small)"]
+        A --> B --> C --> D
     end
 
-    subgraph APP["② 서비스 · 실시간"]
-        U[유저] -->|로그인/온보딩| F[FastAPI]
-        F -->|JWT 발급| U
-        U -->|추천 요청| F
-        F --> G[LangGraph Agent]
-        G -->|1. 유저 프로필 조회| E
-        G -->|2. HyDE 가상 도서 생성| H[GPT-4o-mini]
-        G -->|3. 하이브리드 벡터 검색| E
-        G -->|4. 추천 사유 생성| H
-        G -->|SSE 스트리밍| F
-        F -->|실시간 렌더링| FE[React 프론트엔드]
-        FE --> U
+    NEW["신간 입고 · 카탈로그 갱신"]
+    NEW -.->|"파이프라인 재실행<br/>(LLM 재학습 없이 추천 결과에 즉시 반영)"| PIPE
+
+    subgraph DEPLOY["② 배포 구성 · Docker (단일 서버)"]
+        N["nginx 리버스 프록시<br/>(단일 진입점)"]
+        E[("PostgreSQL + pgvector<br/>(DB 컨테이너)")]
+        subgraph APP["서비스 · 실시간"]
+            F["FastAPI<br/>(API 컨테이너)"]
+            FE["React SPA<br/>(프론트엔드 컨테이너)"]
+            G["LangGraph Agent<br/>(4-step 추천 파이프라인)"]
+        end
     end
+
+    subgraph EXT["외부 API · OpenAI"]
+        H["GPT-4o-mini<br/>(런타임 추론)"]
+    end
+
+    U["👤 유저"]
+    U -->|"로그인 · 온보딩"| N
+    U -->|"추천 요청"| N
+    N -->|"/api/* (HTTP)"| F
+    N -->|"정적 리소스 (HTTP)"| FE
+    F -->|"JWT 발급"| U
+    F -->|"에이전트 호출"| G
+    G -->|"1. 유저 프로필 조회"| E
+    G -->|"2. HyDE 가상 도서 생성"| H
+    G -->|"3. 하이브리드 벡터 검색"| E
+    G -->|"4. 추천 사유 생성"| H
+    G -->|"SSE 스트리밍"| F
+    FE -->|"실시간 렌더링"| U
+    D ==>|"임베딩 · 메타데이터 적재"| E
+
 
     E -.공유.- APP
 ```

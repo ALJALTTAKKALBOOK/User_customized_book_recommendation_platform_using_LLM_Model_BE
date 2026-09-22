@@ -5,33 +5,34 @@ from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from sqlalchemy import case
+from sqlalchemy import select, case
 
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig 
 
-from app.domains.users.model import User
+from app.domains.users.model import User, MockUser
 from app.domains.books.model import Book
 from app.core.constants import GENRES, ALL_SUB_CATEGORIES
 from app.core.llm_helper import llm_analyzer, llm_creator, embeddings_client
-from app.domains.users.model import MockUser
 
 logger = logging.getLogger(__name__)
 
-# 최대 재시도 허용 횟수
-MAX_RETRIES = 2
+# ---------------------------------------------------------
+# 설정값: 거리 임계값 및 재시도 상한
+# pgvector 코사인 거리 = 1 - cosine_similarity (0에 가까울수록 유사)
+# -0.15 보정 후 최상위 1위 도서의 거리가 0.65를 초과하면 유사도 부족(Low Confidence)으로 판단
+# ---------------------------------------------------------
+MAX_RETRIES = 1
+DISTANCE_CONFIDENCE_THRESHOLD = 0.65
 
 # ---------------------------------------------------------
-# 0. 시맨틱 라우팅 유틸리티 작성(최초 1회만 메모리에 캐싱)
+# 0. 시맨틱 라우팅 유틸리티 (메모리 캐싱)
 # ---------------------------------------------------------
-CATEGORY_EMBEDDING_CACHE = {}
+CATEGORY_EMBEDDING_CACHE: Dict[str, np.ndarray] = {}
 
 def calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
-    """두 벡터 간의 코사인 유사도를 계산합니다."""
-    result = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-    return result
+    return float(np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)))
 
 CATEGORY_DESCRIPTIONS = {
     "컴퓨터공학": "컴퓨터공학 기초 이론서. 자료구조, 알고리즘, 컴퓨터 구조, 이산수학, 운영체제 원리, 컴파일러 등 학부 전공서. 컴퓨터 역사 및 기술 발전사 교양서 포함.",
@@ -46,7 +47,7 @@ CATEGORY_DESCRIPTIONS = {
     "모바일프로그래밍": "모바일 앱 개발서. iOS(Swift, RxSwift, MVVM), Android(Kotlin), 크로스플랫폼(Flutter, React Native) 네이티브 앱 개발.",
 }
 
-async def get_or_embed_categories():
+async def get_or_embed_categories() -> Dict[str, np.ndarray]:
     global CATEGORY_EMBEDDING_CACHE
     if not CATEGORY_EMBEDDING_CACHE:
         for category in ALL_SUB_CATEGORIES:
@@ -71,14 +72,12 @@ class AgentState(TypedDict):
     hyde_keyword: NotRequired[list[str]]
     
     recommended_books: NotRequired[List[dict[str, Any]]]
+    top_distance: NotRequired[float]          
     final_answer: NotRequired[str]
     
-    #  무한 루프 방지용 재시도 횟수 기록
-    retry_count: NotRequired[int]
+    retry_count: NotRequired[int]             
+    is_broadening_mode: NotRequired[bool]   
 
-# ---------------------------------------------------------
-# 2. 각 Node의 입출력 스키마 정의 (Pydantic 모델)
-# ---------------------------------------------------------
 class ContextAnalysisOutput(BaseModel):
     target_genre: str = Field(description="가장 적합한 장르(대분류)")
     target_sub_category: str = Field(
@@ -97,18 +96,17 @@ class HydeOutput(BaseModel):
     )
 
 # ---------------------------------------------------------
-# 3. 전역 Node 함수들 
+# 2. Node 함수들
 # ---------------------------------------------------------
 
-# node1
+# Node 1: 컨텍스트 분석 (1회만 수행)
 async def analyze_context_node(state: AgentState) -> dict[str, Any]:
     prompt = ChatPromptTemplate.from_messages([
         ("system",
             f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
             f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n\n"
             "1. 유저의 질문을 분석해서, 어떤 IT 분야/주제의 책을 찾는지 가장 잘 묘사하는 "
-            "**가상의 카테고리명을 자유롭게 생성**해. 카테고리 후보 목록을 보지 않고, "
-            "핵심 키워드가 2~4개 포함되는 1줄로 작성해.\n"
+            "**가상의 카테고리명을 자유롭게 생성**해. 핵심 키워드가 2~4개 포함되는 1줄로 작성해.\n"
             "2. [허용된 장르(대분류)] 중 가장 적합한 장르 하나를 선택해.\n"
             "3. 질문에 '기초, 처음, 쉬운' 등이 있으면 유저 숙련도(domain_levels)의 해당 분야 레벨을 기준으로 -1 하향해.\n"
             "4. '심화, 실전, 어려운' 등이 있으면 난이도 +2 상향해.\n"
@@ -138,8 +136,7 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
             highest_score = score
             best_category = category_name
 
-    logger.info(f"LLM이 파악한 주제: {result.target_sub_category}")
-    logger.info(f"시맨틱 라우팅 결과: '{best_category}'로 매핑됨 (유사도: {highest_score:.4f})")
+    logger.info(f"[Node 1] 시맨틱 라우팅 완료: '{best_category}' (유사도: {highest_score:.4f})")
 
     return {
         "hyde_target_genre": result.target_genre,
@@ -147,19 +144,28 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
         "hyde_difficulty_level": result.calculated_difficulty
     }
 
-# node2
+# Node 2: 가상 도서(HyDE) 생성 (Broadening 재시도 지원)
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
-    target_category = state.get("hyde_target_category")
+    target_category = state.get("hyde_target_category", "IT")
     target_level = state.get("hyde_difficulty_level", 5)
-    
-    if not target_category:
-        target_category = state.get("hyde_target_genre", "IT")
-    
+    is_broadening = state.get("is_broadening_mode", False)
+
+    retry_instruction = ""
+    if is_broadening:
+        retry_instruction = (
+            f"\n[ 검색 신뢰도 부족에 따른 가상 도서 재생성 지침]\n"
+            f"- 이전 가상 도서의 줄거리가 너무 지엽적이어서 DB 내 도서들과 의미적 거리가 멀었습니다.\n"
+            f"- 특정 마이너 라이브러리나 좁은 용어에 집중하지 마세요.\n"
+            f"- '{target_category}' 분야의 표준적인 핵심 개념 중심으로 "
+            f"검색 풀을 넓힐 수 있도록 줄거리를 포괄적인 톤으로 작성하세요.\n"
+        )
+
     prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "너는 도서 큐레이터야. 유저의 질문과 타겟 정보를 바탕으로, "
-         "DB 벡터 검색에 사용할 '이상적인 가상 도서'를 생성해.\n\n"
+         f"너는 도서 큐레이터야. 유저의 질문과 타겟 정보를 바탕으로, "
+         f"DB 벡터 검색에 사용할 '이상적인 가상 도서'를 생성해.\n"
+         f"{retry_instruction}\n"
          "[줄거리 작성 규칙]\n"
          "- 분량: 100자 이내, 한 문장.\n"
          "- 다음 3가지를 반드시 포함:\n"
@@ -195,14 +201,14 @@ async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
         "hyde_keyword": result.keywords
     }
 
-# node3
+# Node 3: 벡터 검색 및 가중 거리(Weighted Distance) 산출
 async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     configurable_data = config.get("configurable", {})
     db_session = configurable_data.get("db_session")
     
     if not db_session:
         logger.error("DB 세션이 주입되지 않았습니다!")
-        return {"recommended_books": []}
+        return {"recommended_books": [], "top_distance": 2.0}
     
     hyde_target_category = state.get("hyde_target_category")
     hyde_difficulty_level = state.get("hyde_difficulty_level")
@@ -210,25 +216,31 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     hyde_keyword = state.get("hyde_keyword", [])
     
     if not hyde_summary:
-        return {"recommended_books": []}
+        return {"recommended_books": [], "top_distance": 2.0}
 
     keyword_str = ", ".join(hyde_keyword)
     hyde_text_to_embed = f"난이도: {hyde_difficulty_level}\n키워드: {keyword_str}\n줄거리: {hyde_summary}"
     
     query_vector = await embeddings_client.aembed_query(hyde_text_to_embed)
-    distance = Book.embedding.cosine_distance(query_vector)
+    raw_distance = Book.embedding.cosine_distance(query_vector)
 
-    weighted_distance = distance - case(
+    # 카테고리 일치 도서에 -0.15 감쇄 부여
+    weighted_distance = raw_distance - case(
         (Book.sub_category == hyde_target_category, 0.15),
         else_=0.0
     )
         
-    stmt = select(Book).order_by(weighted_distance).limit(3)
-
+    # 도서 객체와 함께 계산된 weighted_distance 컬럼도 함께 select
+    stmt = select(Book, weighted_distance.label("calc_dist")).order_by(weighted_distance).limit(3)
     result = await db_session.execute(stmt)
-    real_books = result.scalars().all()
+    rows = result.all()
 
-    #  sub_category 정보를 포함하여 반환 (카테고리 일치 여부 판별 목적)
+    if not rows:
+        return {"recommended_books": [], "top_distance": 2.0}
+
+    # 최상위 도서의 보정 거리 확인
+    top_distance = float(rows[0].calc_dist)
+
     recommended_books_list = [{
         "book_id": book.id,
         "title": book.title,
@@ -236,66 +248,68 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
         "difficulty": book.difficulty,
         "summary": book.summary,
         "cover_url": book.cover_url,
-        "sub_category": book.sub_category 
-    } for book in real_books]
+        "sub_category": book.sub_category,
+        "distance": round(float(dist), 4)
+    } for book, dist in rows]
             
-    return {"recommended_books": recommended_books_list}
+    return {
+        "recommended_books": recommended_books_list,
+        "top_distance": top_distance
+    }
 
 # ---------------------------------------------------------
-#  조건부 라우팅 함수 (카테고리 일치 개수 검증)
+# 3. 라우팅 판단 및 상태 갱신 노드
 # ---------------------------------------------------------
-def route_after_retrieval(state: AgentState) -> str:
+
+def evaluate_retrieval_confidence(state: AgentState) -> str:
     """
-    가져온 3권 중 타겟 카테고리와 일치하는 책이 1개 이하(0 또는 1개)이면
-    analyze_context로 되돌아가고, 2개 이상 일치하면 generate_answer로 이동합니다.
+    최상위 책의 보정 거리가 임계값(0.65)을 초과하면 검색 신뢰도가 낮다고 판단,
+    Node 2(HyDE)로 돌아가 더 넓은 범위로 가상 도서를 재생성합니다.
     """
-    recommended_books = state.get("recommended_books", [])
-    target_category = state.get("hyde_target_category")
+    top_distance = state.get("top_distance", 2.0)
     retry_count = state.get("retry_count", 0)
 
-    # 타깃 카테고리와 일치하는 책 권수 카운트
-    match_count = sum(
-        1 for book in recommended_books 
-        if book.get("sub_category") == target_category
-    )
+    logger.info(f"[신뢰도 평가] 1위 도서 보정 거리: {top_distance:.4f} (임계값: {DISTANCE_CONFIDENCE_THRESHOLD})")
 
-    logger.info(f"[검색 검증] 목표 카테고리: {target_category}, 일치 도서 수: {match_count}/3 (재시도 횟수: {retry_count})")
-
-    # 일치 도서가 1개 이하이고, 최대 재시도 횟수 미만인 경우 다시 1번 노드로 루프
-    if match_count <= 1 and retry_count < MAX_RETRIES:
-        logger.warning(f"카테고리 일치 도서가 {match_count}권으로 부족하여 1번 노드(analyze_context)부터 재수행합니다.")
-        return "retry"
+    # 거리가 멀어 신뢰도가 떨어지고, 재시도 횟수가 남아있는 경우
+    if top_distance > DISTANCE_CONFIDENCE_THRESHOLD and retry_count < MAX_RETRIES:
+        logger.warning(f"검색 거리가 너무 멉니다({top_distance:.4f} > {DISTANCE_CONFIDENCE_THRESHOLD}). HyDE 재생성 모드로 전환합니다.")
+        return "retry_hyde"
 
     return "proceed"
 
-# 재시도 카운트를 안전하게 1 올려주는 중간 훅 노드
-def increment_retry_node(state: AgentState) -> dict[str, Any]:
-    return {"retry_count": state.get("retry_count", 0) + 1}
+# 재시도 카운트 및 확장 모드 활성화 노드
+def prepare_broadening_node(state: AgentState) -> dict[str, Any]:
+    return {
+        "retry_count": state.get("retry_count", 0) + 1,
+        "is_broadening_mode": True
+    }
 
-# node4
+# Node 4: 최종 답변 생성
 async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
     domain_levels = state["domain_levels"]
     recommended_books = state.get("recommended_books", [])
     
     if not recommended_books:
-        return {"final_answer": "죄송합니다. 현재 회원님의 수준에 딱 맞는 책을 찾지 못했습니다."}
+        return {"final_answer": "죄송합니다. 현재 회원님의 조건에 맞는 적합한 도서를 찾지 못했습니다."}
         
     books_context = ""
     for idx, book in enumerate(recommended_books, 1):
         books_context += (
             f"[{idx}번 책]\n제목: {book['title']}\n저자: {book['author']}\n"
-            f"난이도: {book['difficulty']}/10\n줄거리: {book['summary']}\n\n"
+            f"분야: {book.get('sub_category', 'IT')}\n난이도: {book['difficulty']}/10\n"
+            f"줄거리: {book['summary']}\n\n"
         )
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", 
          "너는 친절하고 전문적인 IT 도서 추천 비서야.\n"
          "유저의 [질문]과 [현재 숙련도]를 분석해서, 내가 제공한 [추천 도서 목록]의 책들이 왜 유저에게 맞는지 설명해 줘.\n\n"
-         " [절대 규칙 - 엄격히 준수할 것]\n"
-         "1. 제공된 [추천 도서 목록]에 있는 책은 **무조건 모두, 단 한 권도 빠짐없이** 각각 언급하고 추천 사유를 작성해.\n"
-         "2. 책 제목을 명확히 적고, 그 책이 유저의 난이도와 질문 의도에 왜 부합하는지 1~2줄로 핵심만 설명해.\n"
-         "3. 없는 책을 지어내거나, 목록 중 일부 책의 설명을 생략하면 절대 안 돼."
+         "[절대 규칙]\n"
+         "1. 제공된 [추천 도서 목록]의 책은 단 한 권도 빠짐없이 각각 언급하고 추천 사유를 작성하라.\n"
+         "2. 책 제목을 명확히 적고, 그 책이 유저의 난이도와 질문 의도에 부합하는 이유를 1~2줄로 핵심만 설명하라.\n"
+         "3. 없는 책을 지어내거나 누락하지 마라."
         ),
         ("user", "내 숙련도: {domain_levels}\n내 질문: {query}\n\n[추천 도서 목록]\n{books_context}")
     ])
@@ -305,43 +319,40 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     
     return {"final_answer": str(response.content)}
 
-
 # ---------------------------------------------------------
-# 4. LangGraph 전역 컴파일 (재시도 루프 구성)
+# 4. StateGraph 컴파일 (순환 그래프 구축)
 # ---------------------------------------------------------
 workflow = StateGraph(AgentState)
 
-# 노드 등록
 workflow.add_node("analyze_context", analyze_context_node)
 workflow.add_node("generate_hyde", generate_hyde_node)
 workflow.add_node("retrieve_books", retrieve_books_node)
-workflow.add_node("increment_retry", increment_retry_node)
+workflow.add_node("prepare_broadening", prepare_broadening_node)
 workflow.add_node("generate_answer", generate_answer_node)
 
-# 기본 엣지 연결
+# 기본 전진 엣지
 workflow.set_entry_point("analyze_context")
 workflow.add_edge("analyze_context", "generate_hyde")
 workflow.add_edge("generate_hyde", "retrieve_books")
 
-# 🌟 조건부 엣지(Conditional Edge) 연결
+# 🌟 신뢰도 기반 조건부 엣지
 workflow.add_conditional_edges(
     "retrieve_books",
-    route_after_retrieval,
+    evaluate_retrieval_confidence,
     {
-        "retry": "increment_retry",     # 재시도: 카운트 증가 후 analyze_context로 이동
-        "proceed": "generate_answer"    # 조건 충족(2권 이상 일치) 시 답변 생성으로 이동
+        "retry_hyde": "prepare_broadening",  # 거리가 멀면 확장 플래그 켜고
+        "proceed": "generate_answer"        # 거리가 가까우면 바로 답변 생성
     }
 )
 
-# 재시도 카운트 증가 후 다시 node1(analyze_context)로 연결
-workflow.add_edge("increment_retry", "analyze_context")
+# 🌟 Node 1로 가지 않고 Node 2로 바로 회귀 (비용/시간 절약)
+workflow.add_edge("prepare_broadening", "generate_hyde")
 workflow.add_edge("generate_answer", END)
 
 agent_app = workflow.compile()
 
-
 # =====================================================================
-# 5. FastAPI 서비스 함수
+# 5. FastAPI SSE 스트리밍 서비스 함수
 # =====================================================================
 
 async def stream_book_recommendation_service(
@@ -352,11 +363,13 @@ async def stream_book_recommendation_service(
     
     initial_state: AgentState = {
         "query": query,
-        "domain_levels": current_user.domain_levels, 
-        "retry_count": 0
+        "domain_levels": current_user.domain_levels,
+        "retry_count": 0,
+        "is_broadening_mode": False
     }
     
     config: RunnableConfig = {"configurable": {"db_session": db}}
+    last_retrieved_books: List[dict] = []
     
     async for event in agent_app.astream_events(initial_state, config=config, version="v1"):
         kind = event.get("event")
@@ -364,23 +377,29 @@ async def stream_book_recommendation_service(
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
-        # 🌟 재시도 중이 아닐 때만(답변 생성 노드로 넘어갈 준비가 된 최종 retrieve 결과만) SSE로 전송
-        # LangGraph State의 추천 도서 목록이 확정되어 generate_answer로 스트리밍될 때 책 정보도 함께 방출
+        # 검색 결과 갱신
         if kind == "on_chain_end" and node_name == "retrieve_books":
             output_data = event_data.get("output", {})
-            retrieved_books = output_data.get("recommended_books", [])
-            # 프론트에 넘겨줄 때 sub_category 필드가 필요 없다면 여기서 제거하거나 그대로 전달 가능
-            books_json = json.dumps(retrieved_books, ensure_ascii=False)
-            yield f"event: books\ndata: {books_json}\n\n"
+            last_retrieved_books = output_data.get("recommended_books", [])
 
+        # 재시도 루프 진입 시 사용자에게 상태 푸시
+        elif kind == "on_chain_start" and node_name == "prepare_broadening":
+            yield "event: status\ndata: 🔍 더 광범위한 연관 도서를 탐색하기 위해 검색 조건을 조정 중입니다...\n\n"
+
+        # 답변 생성 노드 진입 시 확정된 책 리스트 전송
+        elif kind == "on_chain_start" and node_name == "generate_answer":
+            if last_retrieved_books:
+                books_json = json.dumps(last_retrieved_books, ensure_ascii=False)
+                yield f"event: books\ndata: {books_json}\n\n"
+
+        # 토큰 스트리밍
         elif kind == "on_chat_model_stream" and node_name == "generate_answer":
             chunk = event_data.get("chunk")
             if chunk and hasattr(chunk, "content") and chunk.content:
-                text = chunk.content
+                text = str(chunk.content)
                 sse_lines = text.split('\n')
                 sse_data = "\n".join([f"data: {line}" for line in sse_lines])
                 yield f"{sse_data}\n\n"
-
 
 async def get_book_recommendation_service_test(
     query: str, 
@@ -390,20 +409,19 @@ async def get_book_recommendation_service_test(
     
     initial_state: AgentState = {
         "query": query,
-        "domain_levels": current_user.domain_levels, 
-        "retry_count": 0
+        "domain_levels": current_user.domain_levels,
+        "retry_count": 0,
+        "is_broadening_mode": False
     }
     
     config: RunnableConfig = {"configurable": {"db_session": db}}
-    
     final_state = await agent_app.ainvoke(initial_state, config=config)
     
     return {
-        "hyde_target_category": final_state.get("hyde_target_category", ""),
-        "hyde_difficulty_level": final_state.get("hyde_difficulty_level", 0),
-        "hyde_summary": final_state.get("hyde_summary", "가상 도서 생성 실패"),
-        "hyde_keyword": final_state.get("hyde_keyword", []),
+        "final_category": final_state.get("hyde_target_category", ""),
+        "top_distance": final_state.get("top_distance", 0.0),
+        "retry_count": final_state.get("retry_count", 0),
+        "is_broadening_mode": final_state.get("is_broadening_mode", False),
         "recommended_books": final_state.get("recommended_books", []),
-        "final_answer": final_state.get("final_answer", "답변 생성 실패"),
-        "retry_count": final_state.get("retry_count", 0)
+        "final_answer": final_state.get("final_answer", "")
     }

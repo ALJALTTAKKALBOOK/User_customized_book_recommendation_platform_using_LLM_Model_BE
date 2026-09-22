@@ -1,7 +1,6 @@
 import json
 import logging
 import numpy as np
-import time
 from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
@@ -21,6 +20,9 @@ from app.domains.users.model import MockUser
 
 logger = logging.getLogger(__name__)
 
+# 최대 재시도 허용 횟수
+MAX_RETRIES = 2
+
 # ---------------------------------------------------------
 # 0. 시맨틱 라우팅 유틸리티 작성(최초 1회만 메모리에 캐싱)
 # ---------------------------------------------------------
@@ -28,10 +30,7 @@ CATEGORY_EMBEDDING_CACHE = {}
 
 def calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
     """두 벡터 간의 코사인 유사도를 계산합니다."""
-    start_time = time.time()
     result = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-    end_time = time.time()
-    print(f"코사인 유사도 계산 시간: {end_time - start_time}")
     return result
 
 CATEGORY_DESCRIPTIONS = {
@@ -58,7 +57,7 @@ async def get_or_embed_categories():
     return CATEGORY_EMBEDDING_CACHE
 
 # ---------------------------------------------------------
-# 1. State 및 Pydantic 정의 (기존과 동일, db_session 없음)
+# 1. State 및 Pydantic 정의
 # ---------------------------------------------------------
 class AgentState(TypedDict):
     query: str
@@ -73,20 +72,20 @@ class AgentState(TypedDict):
     
     recommended_books: NotRequired[List[dict[str, Any]]]
     final_answer: NotRequired[str]
+    
+    #  무한 루프 방지용 재시도 횟수 기록
+    retry_count: NotRequired[int]
 
 # ---------------------------------------------------------
 # 2. 각 Node의 입출력 스키마 정의 (Pydantic 모델)
 # ---------------------------------------------------------
 class ContextAnalysisOutput(BaseModel):
     target_genre: str = Field(description="가장 적합한 장르(대분류)")
-    target_sub_category: str = Field(  # | None 제거
+    target_sub_category: str = Field(
         description="질문의 핵심 주제를 묘사하는 짧고 명확한 가상 카테고리명 (예: 'OS', '프로그래밍언어')"
     )
     calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
 
-# v1 변경: summary 분량을 200~400자 → 100자 이내로 축소.
-# DB의 임베딩이 short_summary(약 50자) 기반으로 만들어졌으므로,
-# HyDE도 같은 차원으로 가상 책을 생성해야 벡터 유사도 비교가 의미를 가진다.
 class HydeOutput(BaseModel):
     summary: str = Field(
         description="가상 도서 핵심 요약 (100자 이내, 주제+대상+접근법 한 문장)"
@@ -103,7 +102,6 @@ class HydeOutput(BaseModel):
 
 # node1
 async def analyze_context_node(state: AgentState) -> dict[str, Any]:
-    # ALL_SUB_CATEGORIES 노출 제거 — LLM이 직접 분류 결정을 하지 않도록 함
     prompt = ChatPromptTemplate.from_messages([
         ("system",
             f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
@@ -125,12 +123,10 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
     raw_result = await chain.ainvoke({"domain_levels": state["domain_levels"], "query": state["query"]})
     result = cast(ContextAnalysisOutput, raw_result)
 
-    # 2. LLM이 생성한 '카테고리 묘사문'을 임베딩 (벡터화)
     description_vector = np.array(
         await embeddings_client.aembed_query(result.target_sub_category)
     )
 
-    # 3. 사전에 임베딩된 카테고리들과 비교 (시맨틱 라우팅 핵심)
     category_cache = await get_or_embed_categories()
     
     best_category = ""
@@ -145,12 +141,12 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
     logger.info(f"LLM이 파악한 주제: {result.target_sub_category}")
     logger.info(f"시맨틱 라우팅 결과: '{best_category}'로 매핑됨 (유사도: {highest_score:.4f})")
 
-    # 4. 강제 매핑된 best_category를 State로 넘겨줍니다.
     return {
         "hyde_target_genre": result.target_genre,
-        "hyde_target_category": best_category, # 완벽하게 ALL_SUB_CATEGORIES 중 하나가 보장됨
+        "hyde_target_category": best_category,
         "hyde_difficulty_level": result.calculated_difficulty
     }
+
 # node2
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
@@ -160,12 +156,6 @@ async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     if not target_category:
         target_category = state.get("hyde_target_genre", "IT")
     
-    # ⚠️ 키워드 스키마는 crawler/scripts/enrich_data.py의 SYSTEM_PROMPT와
-    #    반드시 동일하게 유지할 것. 한 쪽 수정 시 다른 쪽도 같이 수정.
-    #
-    # v1 변경: 줄거리 분량을 200~400자 → 100자 이내로 축소.
-    # DB의 임베딩이 short_summary(약 50자) 기반이므로, HyDE도 같은 차원으로
-    # 생성해야 벡터 유사도 비교가 의미를 가진다.
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          "너는 도서 큐레이터야. 유저의 질문과 타겟 정보를 바탕으로, "
@@ -176,37 +166,19 @@ async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
          "  1. 주제 (어떤 기술/개념)\n"
          "  2. 대상 (누구를 위한 — 입문자/실무자/연구자/비전공자 등)\n"
          "  3. 접근법 (어떻게 — 사례 중심/실습 중심/이론 중심/역사적 관점/튜토리얼 등)\n"
-         "- 난이도별 어휘 선택 (짧은 분량이므로 어휘 하나로 톤을 구분):\n"
+         "- 난이도별 어휘 선택:\n"
          "  · 0~2: \"비전공자에게\", \"~를 처음 접하는 사람에게\", \"기초부터 단계별로\"\n"
          "  · 3~5: \"실무에서 자주 마주치는 ~를 단계별로\", \"입문자에게 실습 중심으로\"\n"
          "  · 6~8: \"~의 내부 동작 원리를 심화 분석한\", \"실무자에게 딥다이브로\"\n"
          "  · 9~10: \"최신 연구 동향과 ~를 분석한\", \"연구자/전문가에게 심화 학습서로\"\n"
          "- 타겟 카테고리의 핵심 개념을 1~2개 자연스럽게 포함하라.\n"
-         "- 유저 질문의 의도(예: '쉬운', '실전', '역사', '그림으로')를 반드시 줄거리에 반영하라.\n"
-         "- 마케팅 문구 금지 ('최고의', '필독서', '쉽게 배우는').\n"
-         "- 추상적 표현 금지 ('당신의 인생을 바꿀', '혁신적인').\n\n"
-         "[줄거리 좋은 예시]\n"
-         "- \"AI의 5가지 역사적 사건을 통해 인공지능과 기계학습의 발전사를 비전공자에게 설명하는 교양서.\"\n"
-         "- \"리액트의 내부 동작 원리와 렌더링 메커니즘을 실무자 대상으로 심화 분석한 책.\"\n"
-         "- \"플러터로 안드로이드와 iOS 앱을 동시 개발하는 방법을 입문자에게 단계별로 가르치는 튜토리얼.\"\n\n"
+         "- 유저 질문의 의도를 반드시 줄거리에 반영하라.\n"
+         "- 마케팅 문구 및 추상적 표현 금지.\n\n"
          "[키워드 추출 규칙]\n"
-         "정확히 5개의 키워드를 아래 3개 축으로 추출하라.\n\n"
-         "1. 주제 (topic) — 2개: 책이 다루는 핵심 개념/기술/언어를 구체적으로.\n\n"
-         "2. 접근방식 (approach) — 1~2개. 아래 어휘에서만 선택:\n"
-         "   [\"역사적 관점\", \"사례 중심\", \"이론 중심\", \"실습 중심\", \"개념 정리\",\n"
-         "    \"튜토리얼\", \"레퍼런스\", \"프로젝트 기반\", \"비교 분석\", \"시각적 설명\",\n"
-         "    \"딥다이브\", \"문제 해결 중심\"]\n\n"
-         "3. 대상/성격 (target) — 1~2개. 아래 어휘에서만 선택:\n"
-         "   [\"비전공자 교양서\", \"입문자용\", \"중급자용\", \"실무자용\", \"연구자용\",\n"
-         "    \"수험서\", \"참고서\", \"기초 학습서\", \"심화 학습서\"]\n\n"
-         "[질문 의도 → 키워드 매핑 힌트]\n"
-         "- \"쉬운/입문/처음/노베이스\" → target은 \"입문자용\" 또는 \"비전공자 교양서\".\n"
-         "- \"심화/실전/실무/딥다이브\" → target은 \"실무자용\" 또는 \"심화 학습서\", approach는 \"딥다이브\".\n"
-         "- \"역사/사례\" → approach에 \"역사적 관점\" 또는 \"사례 중심\".\n"
-         "- \"그림/시각적/직관적\" → approach에 \"시각적 설명\".\n"
-         "- \"튜토리얼/예제/단계별\" → approach에 \"튜토리얼\" 또는 \"실습 중심\".\n\n"
-         "[중요]\n"
-         "- approach/target은 반드시 위 어휘 목록 안에서만 선택. 새 표현 금지.\n"
+         "정확히 5개의 키워드를 아래 3개 축으로 추출하라.\n"
+         "1. 주제 (topic) — 2개\n"
+         "2. 접근방식 (approach) — 1~2개 [\"역사적 관점\", \"사례 중심\", \"이론 중심\", \"실습 중심\", \"개념 정리\", \"튜토리얼\", \"레퍼런스\", \"프로젝트 기반\", \"비교 분석\", \"시각적 설명\", \"딥다이브\", \"문제 해결 중심\"]\n"
+         "3. 대상/성격 (target) — 1~2개 [\"비전공자 교양서\", \"입문자용\", \"중급자용\", \"실무자용\", \"연구자용\", \"수험서\", \"참고서\", \"기초 학습서\", \"심화 학습서\"]\n"
          "- 5개 키워드를 라벨 없이 하나의 리스트로 합쳐서 반환하라."
         ),
         ("user", "유저 질문: {query}\n타겟 카테고리: {category}\n타겟 난이도: {level}")
@@ -232,51 +204,79 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
         logger.error("DB 세션이 주입되지 않았습니다!")
         return {"recommended_books": []}
     
-    hyde_target_genre = state.get("hyde_target_genre", "")
     hyde_target_category = state.get("hyde_target_category")
-    
     hyde_difficulty_level = state.get("hyde_difficulty_level")
     hyde_summary = state.get("hyde_summary")
-    hyde_keyword = state.get("hyde_keyword",[])
+    hyde_keyword = state.get("hyde_keyword", [])
     
     if not hyde_summary:
-        return {"recommended_books":[]}
+        return {"recommended_books": []}
 
-    # v1: hyde_summary가 100자 이내 short summary로 들어오므로,
-    # DB의 short_summary 기반 임베딩과 자연스럽게 차원이 맞는다.
     keyword_str = ", ".join(hyde_keyword)
     hyde_text_to_embed = f"난이도: {hyde_difficulty_level}\n키워드: {keyword_str}\n줄거리: {hyde_summary}"
     
     query_vector = await embeddings_client.aembed_query(hyde_text_to_embed)
-
     distance = Book.embedding.cosine_distance(query_vector)
 
     weighted_distance = distance - case(
-    (Book.sub_category == hyde_target_category, 0.15),
-    else_=0.0)
+        (Book.sub_category == hyde_target_category, 0.15),
+        else_=0.0
+    )
         
     stmt = select(Book).order_by(weighted_distance).limit(3)
 
-    # 안전하게 가져온 DB 세션 사용
     result = await db_session.execute(stmt)
     real_books = result.scalars().all()
 
-    recommended_books_list =[{
+    #  sub_category 정보를 포함하여 반환 (카테고리 일치 여부 판별 목적)
+    recommended_books_list = [{
         "book_id": book.id,
         "title": book.title,
         "author": book.author,
         "difficulty": book.difficulty,
         "summary": book.summary,
-        "cover_url": book.cover_url
+        "cover_url": book.cover_url,
+        "sub_category": book.sub_category 
     } for book in real_books]
             
     return {"recommended_books": recommended_books_list}
+
+# ---------------------------------------------------------
+#  조건부 라우팅 함수 (카테고리 일치 개수 검증)
+# ---------------------------------------------------------
+def route_after_retrieval(state: AgentState) -> str:
+    """
+    가져온 3권 중 타겟 카테고리와 일치하는 책이 1개 이하(0 또는 1개)이면
+    analyze_context로 되돌아가고, 2개 이상 일치하면 generate_answer로 이동합니다.
+    """
+    recommended_books = state.get("recommended_books", [])
+    target_category = state.get("hyde_target_category")
+    retry_count = state.get("retry_count", 0)
+
+    # 타깃 카테고리와 일치하는 책 권수 카운트
+    match_count = sum(
+        1 for book in recommended_books 
+        if book.get("sub_category") == target_category
+    )
+
+    logger.info(f"[검색 검증] 목표 카테고리: {target_category}, 일치 도서 수: {match_count}/3 (재시도 횟수: {retry_count})")
+
+    # 일치 도서가 1개 이하이고, 최대 재시도 횟수 미만인 경우 다시 1번 노드로 루프
+    if match_count <= 1 and retry_count < MAX_RETRIES:
+        logger.warning(f"카테고리 일치 도서가 {match_count}권으로 부족하여 1번 노드(analyze_context)부터 재수행합니다.")
+        return "retry"
+
+    return "proceed"
+
+# 재시도 카운트를 안전하게 1 올려주는 중간 훅 노드
+def increment_retry_node(state: AgentState) -> dict[str, Any]:
+    return {"retry_count": state.get("retry_count", 0) + 1}
 
 # node4
 async def generate_answer_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
     domain_levels = state["domain_levels"]
-    recommended_books = state.get("recommended_books",[])
+    recommended_books = state.get("recommended_books", [])
     
     if not recommended_books:
         return {"final_answer": "죄송합니다. 현재 회원님의 수준에 딱 맞는 책을 찾지 못했습니다."}
@@ -307,26 +307,41 @@ async def generate_answer_node(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# 3. 전역 컴파일 (애플리케이션이 뜰 때 단 한 번만 실행됨!)
+# 4. LangGraph 전역 컴파일 (재시도 루프 구성)
 # ---------------------------------------------------------
 workflow = StateGraph(AgentState)
+
+# 노드 등록
 workflow.add_node("analyze_context", analyze_context_node)
 workflow.add_node("generate_hyde", generate_hyde_node)
 workflow.add_node("retrieve_books", retrieve_books_node)
+workflow.add_node("increment_retry", increment_retry_node)
 workflow.add_node("generate_answer", generate_answer_node)
 
+# 기본 엣지 연결
+workflow.set_entry_point("analyze_context")
 workflow.add_edge("analyze_context", "generate_hyde")
 workflow.add_edge("generate_hyde", "retrieve_books")
-workflow.add_edge("retrieve_books", "generate_answer")
-workflow.add_edge("generate_answer", END)
 
-workflow.set_entry_point("analyze_context")
+# 🌟 조건부 엣지(Conditional Edge) 연결
+workflow.add_conditional_edges(
+    "retrieve_books",
+    route_after_retrieval,
+    {
+        "retry": "increment_retry",     # 재시도: 카운트 증가 후 analyze_context로 이동
+        "proceed": "generate_answer"    # 조건 충족(2권 이상 일치) 시 답변 생성으로 이동
+    }
+)
+
+# 재시도 카운트 증가 후 다시 node1(analyze_context)로 연결
+workflow.add_edge("increment_retry", "analyze_context")
+workflow.add_edge("generate_answer", END)
 
 agent_app = workflow.compile()
 
 
 # =====================================================================
-# 4. FastAPI 호출용 메인 서비스 함수
+# 5. FastAPI 서비스 함수
 # =====================================================================
 
 async def stream_book_recommendation_service(
@@ -338,9 +353,9 @@ async def stream_book_recommendation_service(
     initial_state: AgentState = {
         "query": query,
         "domain_levels": current_user.domain_levels, 
+        "retry_count": 0
     }
     
-    # 🌟 핵심: 실행 시점에 DB 세션을 config로 포장해서 주입합니다.
     config: RunnableConfig = {"configurable": {"db_session": db}}
     
     async for event in agent_app.astream_events(initial_state, config=config, version="v1"):
@@ -349,9 +364,12 @@ async def stream_book_recommendation_service(
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
+        # 🌟 재시도 중이 아닐 때만(답변 생성 노드로 넘어갈 준비가 된 최종 retrieve 결과만) SSE로 전송
+        # LangGraph State의 추천 도서 목록이 확정되어 generate_answer로 스트리밍될 때 책 정보도 함께 방출
         if kind == "on_chain_end" and node_name == "retrieve_books":
             output_data = event_data.get("output", {})
-            retrieved_books = output_data.get("recommended_books",[])
+            retrieved_books = output_data.get("recommended_books", [])
+            # 프론트에 넘겨줄 때 sub_category 필드가 필요 없다면 여기서 제거하거나 그대로 전달 가능
             books_json = json.dumps(retrieved_books, ensure_ascii=False)
             yield f"event: books\ndata: {books_json}\n\n"
 
@@ -363,6 +381,7 @@ async def stream_book_recommendation_service(
                 sse_data = "\n".join([f"data: {line}" for line in sse_lines])
                 yield f"{sse_data}\n\n"
 
+
 async def get_book_recommendation_service_test(
     query: str, 
     current_user: Union[MockUser, User],
@@ -372,9 +391,9 @@ async def get_book_recommendation_service_test(
     initial_state: AgentState = {
         "query": query,
         "domain_levels": current_user.domain_levels, 
+        "retry_count": 0
     }
     
-    # 🌟 테스트용 함수에도 동일하게 config 주입
     config: RunnableConfig = {"configurable": {"db_session": db}}
     
     final_state = await agent_app.ainvoke(initial_state, config=config)
@@ -383,7 +402,8 @@ async def get_book_recommendation_service_test(
         "hyde_target_category": final_state.get("hyde_target_category", ""),
         "hyde_difficulty_level": final_state.get("hyde_difficulty_level", 0),
         "hyde_summary": final_state.get("hyde_summary", "가상 도서 생성 실패"),
-        "hyde_keyword": final_state.get("hyde_keyword",[]),
-        "recommended_books": final_state.get("recommended_books",[]),
-        "final_answer": final_state.get("final_answer", "답변 생성 실패")
+        "hyde_keyword": final_state.get("hyde_keyword", []),
+        "recommended_books": final_state.get("recommended_books", []),
+        "final_answer": final_state.get("final_answer", "답변 생성 실패"),
+        "retry_count": final_state.get("retry_count", 0)
     }

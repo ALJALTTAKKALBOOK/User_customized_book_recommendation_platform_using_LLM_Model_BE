@@ -83,7 +83,11 @@ class ContextAnalysisOutput(BaseModel):
     target_sub_category: str = Field(
         description="질문의 핵심 주제를 묘사하는 짧고 명확한 가상 카테고리명 (예: 'OS', '프로그래밍언어')"
     )
-    calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
+    calculated_difficulty: int = Field(
+        ge=0,
+        le=10,
+        description="계산된 난이도 (0~10)"
+    )
 
 class HydeOutput(BaseModel):
     summary: str = Field(
@@ -147,7 +151,7 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
 # Node 2: 가상 도서(HyDE) 생성 (Broadening 재시도 지원)
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
-    target_category = state.get("hyde_target_category", "IT")
+    target_category = state.get("hyde_target_category", "IT일반")
     target_level = state.get("hyde_difficulty_level", 5)
     is_broadening = state.get("is_broadening_mode", False)
 
@@ -377,22 +381,24 @@ async def stream_book_recommendation_service(
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
-        # 검색 결과 갱신
+        # 🌟 핵심 수정: output_data가 dict 타입일 때만 안전하게 책 목록 추출
+        # (조건부 라우터가 리턴한 문자열 "proceed" / "retry_hyde" 이벤트는 무시)
         if kind == "on_chain_end" and node_name == "retrieve_books":
-            output_data = event_data.get("output", {})
-            last_retrieved_books = output_data.get("recommended_books", [])
+            output_data = event_data.get("output")
+            if isinstance(output_data, dict) and "recommended_books" in output_data:
+                last_retrieved_books = output_data.get("recommended_books", [])
 
         # 재시도 루프 진입 시 사용자에게 상태 푸시
         elif kind == "on_chain_start" and node_name == "prepare_broadening":
             yield "event: status\ndata: 🔍 더 광범위한 연관 도서를 탐색하기 위해 검색 조건을 조정 중입니다...\n\n"
 
-        # 답변 생성 노드 진입 시 확정된 책 리스트 전송
+        # 최종 확정되어 generate_answer가 시작되는 순간 책 목록 1회 방출
         elif kind == "on_chain_start" and node_name == "generate_answer":
             if last_retrieved_books:
                 books_json = json.dumps(last_retrieved_books, ensure_ascii=False)
                 yield f"event: books\ndata: {books_json}\n\n"
 
-        # 토큰 스트리밍
+        # 답변 토큰 실시간 스트리밍
         elif kind == "on_chat_model_stream" and node_name == "generate_answer":
             chunk = event_data.get("chunk")
             if chunk and hasattr(chunk, "content") and chunk.content:
@@ -419,6 +425,10 @@ async def get_book_recommendation_service_test(
     
     return {
         "final_category": final_state.get("hyde_target_category", ""),
+        "hyde_target_category": final_state.get("hyde_target_category", ""),
+        "hyde_difficulty_level": final_state.get("hyde_difficulty_level", 0),
+        "hyde_keyword": final_state.get("hyde_keyword", []),
+        "hyde_summary": final_state.get("hyde_summary", ""),
         "top_distance": final_state.get("top_distance", 0.0),
         "retry_count": final_state.get("retry_count", 0),
         "is_broadening_mode": final_state.get("is_broadening_mode", False),

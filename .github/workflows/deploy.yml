@@ -21,7 +21,6 @@ jobs:
             cd /home/ubuntu/User_customized_book_recommendation_platform_using_LLM_Model_BE
 
             # 2. develop 브랜치로 안전하게 전환 후 최신 코드 땡겨오기
-            git checkout develop
             git pull origin develop
 
             # 3. 백엔드 컨테이너만 빠르게 재빌드

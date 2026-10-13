@@ -27,12 +27,16 @@ READ_BOOK_EVALUATION_PROMPT = f"""너는 사용자의 기술적 숙련도를 분
 출력 형식 (순수 JSON만 응답):
 {{
   "domain": "목록 중 선택한 카테고리 이름",
-  "change": 1~5 사이의 성취 점수
+  "change": -2~2 사이의 성취 점수 (매우 낮음: -2, 유지: 0, 매우 높음: 2)
 }}
 """
 
 DIFFICULTY_SCORE_MAP = {
-    "너무 쉬웠다": 1, "쉬웠다": 2, "읽을만 했다": 3, "이해가 잘 안된다": 2, "무슨의미인지 아예모르겠다": 1
+    "너무 어렵다": -2,
+    "어렵다": -1,         
+    "읽을만 했다": 0,
+    "쉬웠다": 1,
+    "너무 쉬웠다": 2
 }
 
 # -----------------------------------------------------------------------------
@@ -173,7 +177,7 @@ async def run_profiling_task(user_id: int, content: str, feeling_difficulty: str
                 except:
                     change = base_change
         
-        change = max(0, min(5, change))
+        change = max(-2, min(2, change))
 
         result = await session.execute(select(User).filter(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -181,7 +185,7 @@ async def run_profiling_task(user_id: int, content: str, feeling_difficulty: str
         if user:
             current_levels = dict(user.domain_levels or {})
             old_val = current_levels.get(domain, 0)
-            new_val = min(10, old_val + change)
+            new_val = max(0, min(10, old_val + change))
             current_levels[domain] = new_val
             user.domain_levels = current_levels
             await session.commit()

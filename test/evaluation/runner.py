@@ -55,7 +55,7 @@ async def run_inference():
     
     # 🌟 [병렬 처리 핵심 파트]
     async with httpx.AsyncClient() as http_client:
-        # 1. 30개의 작업(Task) 리스트를 미리 만듭니다. (아직 실행 안 됨)
+        # 1. 모든 테스트 케이스의 작업(Task) 리스트를 미리 만듭니다. (아직 실행 안 됨)
         tasks = [fetch_case(case, http_client, semaphore) for case in test_cases]
         
         # 2. asyncio.gather로 한꺼번에 실행! (세마포어 덕분에 알아서 5개씩 돌아감)

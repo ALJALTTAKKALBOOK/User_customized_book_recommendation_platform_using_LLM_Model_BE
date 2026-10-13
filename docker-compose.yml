@@ -14,7 +14,7 @@ services:
       POSTGRES_DB: bookfit
       TZ: Asia/Seoul
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
-    ports: #- "5432:5432" # 외부 통신용 포트 (필요에 따라 DBeaver 접속용으로 유지)
+    ports: "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -29,9 +29,9 @@ services:
 
   # 3. 프록시 서비스 (Nginx 보안 및 리버스 프록시)
   nginx:
-    image: nginx:alpine
-    container_name: bookfit_nginx
-    restart: always
+    image: "nginx:alpine"
+    container_name: "bookfit_nginx"
+    restart: "always"
     ports:
       - "80:80" # 외부 일반 HTTP 포트 오픈
       - "443:443" # 외부 보안 HTTPS 포트 오픈
@@ -40,6 +40,7 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro # Nginx 설정 파일 주입 (바인드 마운트) [1.1.5, 1.2.6]
       - ./certbot/www:/var/www/certbot:ro # Certbot 검증용 가상 볼륨 마운트 [1.1.5, 1.1.9]
       - ./certbot/conf:/etc/letsencrypt:ro # 실제 HTTPS 인증서 공유용 볼륨 마운트 [1.1.5, 1.1.9]
+      - /home/ubuntu/User_customized_book_recommendation_platform_using_LLM_Model_FE/dist:/usr/share/nginx/html:ro
     depends_on:
       - backend # 백엔드 컨테이너가 완전히 구동된 뒤 기동됨 [1.1.3]
 

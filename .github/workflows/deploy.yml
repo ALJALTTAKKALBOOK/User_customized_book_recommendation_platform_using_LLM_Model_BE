@@ -1,0 +1,31 @@
+name: push develop then merge Lightsail
+
+on:
+  push:
+    branches: 
+      - 'develop'
+
+jobs:
+  deploy:
+    name: aws에 배포시작 (push develop에 의함)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lightsail 서버에 SSH 접속 후 배포 명령 실행
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME }}
+          key: ${{ secrets.LIGHTSAIL_KEY }}
+          script: |
+            # 1. 서버의 백엔드 폴더로 이동
+            cd /home/ubuntu/User_customized_book_recommendation_platform_using_LLM_Model_BE
+
+            # 2. develop 브랜치로 안전하게 전환 후 최신 코드 땡겨오기
+            git checkout develop
+            git pull origin develop
+
+            # 3. 백엔드 컨테이너만 빠르게 재빌드
+            docker compose up -d --build backend
+
+            # 4. Nginx 리로드
+            docker compose exec -T nginx nginx -s reload

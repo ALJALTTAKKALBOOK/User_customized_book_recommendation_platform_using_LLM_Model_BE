@@ -1,3 +1,4 @@
+---
 version: '3.8'
 
 services:
@@ -45,3 +46,4 @@ services:
 # 데이터베이스 영속화를 위한 도커 전용 볼륨 공간 정의 [1.1.5, 2.2.1]
 volumes:
   pgdata:
+...

@@ -230,7 +230,7 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
 
     # 카테고리 일치 도서에 -0.15 감쇄 부여
     weighted_distance = raw_distance - case(
-        (Book.sub_category == hyde_target_category, 0.15),
+        (Book.sub_category == hyde_target_category, 0.05),
         else_=0.0
     )
         

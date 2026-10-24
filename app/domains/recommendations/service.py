@@ -1,13 +1,11 @@
 import json
 import logging
 import numpy as np
-from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, cast
+from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, Optional, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, case
-import logging
-import sys
 
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
@@ -18,24 +16,19 @@ from app.domains.books.model import Book
 from app.core.constants import GENRES, ALL_SUB_CATEGORIES
 from app.core.llm_helper import llm_analyzer, llm_creator, embeddings_client
 
-logger = logging.getLogger("book_recommendation")
-logger.setLevel(logging.INFO)
+logger = logging.getLogger(__name__)
 
-if not logger.handlers:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s | %(message)s"
-    ))
-    logger.addHandler(handler)
-
-logger.propagate = False
 # ---------------------------------------------------------
 # 설정값: 거리 임계값 및 재시도 상한
 # pgvector 코사인 거리 = 1 - cosine_similarity (0에 가까울수록 유사)
-# -0.05 보정 후 최상위 1위 도서의 거리가 0.65를 초과하면 유사도 부족(Low Confidence)으로 판단
+# -0.15 보정 후 최상위 1위 도서의 거리가 0.65를 초과하면 유사도 부족(Low Confidence)으로 판단
 # ---------------------------------------------------------
 MAX_RETRIES = 1
 DISTANCE_CONFIDENCE_THRESHOLD = 0.65
+
+# 시맨틱 라우팅 1·2위 유사도 차이가 이 값보다 작으면 '애매함'으로 보고 카테고리를 쓰지 않음
+# (부스트 미적용 + HyDE에 카테고리 미주입). 평가셋 1·2위 차이 분포를 보고 조정할 것
+ROUTING_MARGIN = 0.02
 
 # ---------------------------------------------------------
 # 0. 시맨틱 라우팅 유틸리티 (메모리 캐싱)
@@ -76,7 +69,7 @@ class AgentState(TypedDict):
     domain_levels: dict[str, int]
     
     hyde_target_genre: NotRequired[str]  
-    hyde_target_category: NotRequired[str]      
+    hyde_target_category: NotRequired[Optional[str]]   # 라우팅이 애매하면 None
     hyde_difficulty_level: NotRequired[int]
     
     hyde_summary: NotRequired[str]
@@ -94,11 +87,7 @@ class ContextAnalysisOutput(BaseModel):
     target_sub_category: str = Field(
         description="질문의 핵심 주제를 묘사하는 짧고 명확한 가상 카테고리명 (예: 'OS', '프로그래밍언어')"
     )
-    calculated_difficulty: int = Field(
-        ge=0,
-        le=10,
-        description="계산된 난이도 (0~10)"
-    )
+    calculated_difficulty: int = Field(description="계산된 난이도 (0~10)")
 
 class HydeOutput(BaseModel):
     summary: str = Field(
@@ -142,16 +131,22 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
 
     category_cache = await get_or_embed_categories()
     
-    best_category = ""
-    highest_score = -1.0
+    # 10개 카테고리 유사도를 내림차순 정렬해 1·2위 차이(margin)로 라우팅 확신도 판단
+    scores = sorted(
+        ((calculate_cosine_similarity(description_vector, category_vector), category_name)
+         for category_name, category_vector in category_cache.items()),
+        reverse=True,
+    )
+    (top1_score, top1_category), (top2_score, top2_category) = scores[0], scores[1]
+    margin = top1_score - top2_score
 
-    for category_name, category_vector in category_cache.items():
-        score = calculate_cosine_similarity(description_vector, category_vector)
-        if score > highest_score:
-            highest_score = score
-            best_category = category_name
+    best_category: Optional[str] = top1_category if margin >= ROUTING_MARGIN else None
 
-    logger.info(f"[Node 1] 시맨틱 라우팅 완료: '{best_category}' (유사도: {highest_score:.4f})")
+    logger.info(
+        f"[Node 1] 시맨틱 라우팅: 가상='{result.target_sub_category}' | "
+        f"1위 {top1_category}({top1_score:.4f}) / 2위 {top2_category}({top2_score:.4f}) | "
+        f"차이 {margin:.4f} → {best_category if best_category else '보류(카테고리 미사용)'}"
+    )
 
     return {
         "hyde_target_genre": result.target_genre,
@@ -162,7 +157,8 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
 # Node 2: 가상 도서(HyDE) 생성 (Broadening 재시도 지원)
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
-    target_category = state.get("hyde_target_category", "IT일반")
+    # 라우팅 보류(None)면 특정 분야를 주입하지 않고 IT 전반으로 생성
+    target_category = state.get("hyde_target_category") or "IT 전반"
     target_level = state.get("hyde_difficulty_level", 5)
     is_broadening = state.get("is_broadening_mode", False)
 
@@ -239,11 +235,14 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     query_vector = await embeddings_client.aembed_query(hyde_text_to_embed)
     raw_distance = Book.embedding.cosine_distance(query_vector)
 
-    # 카테고리 일치 도서에 -0.15 감쇄 부여
-    weighted_distance = raw_distance - case(
-        (Book.sub_category == hyde_target_category, 0.001),
-        else_=0.0
-    )
+    # 카테고리 일치 도서에 -0.15 감쇄 부여 (라우팅 보류 시 부스트 없이 순수 의미 거리)
+    if hyde_target_category:
+        weighted_distance = raw_distance - case(
+            (Book.sub_category == hyde_target_category, 0.15),
+            else_=0.0
+        )
+    else:
+        weighted_distance = raw_distance
         
     # 도서 객체와 함께 계산된 weighted_distance 컬럼도 함께 select
     stmt = select(Book, weighted_distance.label("calc_dist")).order_by(weighted_distance).limit(3)
@@ -266,34 +265,7 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
         "sub_category": book.sub_category,
         "distance": round(float(dist), 4)
     } for book, dist in rows]
-      
-      
-    logger.info(
-        "[RAG_DEBUG] %s",
-        json.dumps(
-            {
-                "query": state["query"],
-                "selected_category": hyde_target_category,
-                "difficulty": hyde_difficulty_level,
-                "hyde_summary": hyde_summary,
-                "hyde_keywords": hyde_keyword,
-                "embedding_input": hyde_text_to_embed,
-                "retry_count": state.get("retry_count", 0),
-                "top_distance": top_distance,
-                "books": [
-                    {
-                        "id": book["book_id"],
-                        "title": book["title"],
-                        "category": book["sub_category"],
-                        "weighted_distance": book["distance"],
-                    }
-                    for book in recommended_books_list
-                ],
-            },
-            ensure_ascii=False,
-        ),
-    )
-             
+            
     return {
         "recommended_books": recommended_books_list,
         "top_distance": top_distance
@@ -419,24 +391,22 @@ async def stream_book_recommendation_service(
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
-        # 🌟 핵심 수정: output_data가 dict 타입일 때만 안전하게 책 목록 추출
-        # (조건부 라우터가 리턴한 문자열 "proceed" / "retry_hyde" 이벤트는 무시)
+        # 검색 결과 갱신
         if kind == "on_chain_end" and node_name == "retrieve_books":
-            output_data = event_data.get("output")
-            if isinstance(output_data, dict) and "recommended_books" in output_data:
-                last_retrieved_books = output_data.get("recommended_books", [])
+            output_data = event_data.get("output", {})
+            last_retrieved_books = output_data.get("recommended_books", [])
 
         # 재시도 루프 진입 시 사용자에게 상태 푸시
         elif kind == "on_chain_start" and node_name == "prepare_broadening":
             yield "event: status\ndata: 🔍 더 광범위한 연관 도서를 탐색하기 위해 검색 조건을 조정 중입니다...\n\n"
 
-        # 최종 확정되어 generate_answer가 시작되는 순간 책 목록 1회 방출
+        # 답변 생성 노드 진입 시 확정된 책 리스트 전송
         elif kind == "on_chain_start" and node_name == "generate_answer":
             if last_retrieved_books:
                 books_json = json.dumps(last_retrieved_books, ensure_ascii=False)
                 yield f"event: books\ndata: {books_json}\n\n"
 
-        # 답변 토큰 실시간 스트리밍
+        # 토큰 스트리밍
         elif kind == "on_chat_model_stream" and node_name == "generate_answer":
             chunk = event_data.get("chunk")
             if chunk and hasattr(chunk, "content") and chunk.content:
@@ -462,11 +432,7 @@ async def get_book_recommendation_service_test(
     final_state = await agent_app.ainvoke(initial_state, config=config)
     
     return {
-        "final_category": final_state.get("hyde_target_category", ""),
-        "hyde_target_category": final_state.get("hyde_target_category", ""),
-        "hyde_difficulty_level": final_state.get("hyde_difficulty_level", 0),
-        "hyde_keyword": final_state.get("hyde_keyword", []),
-        "hyde_summary": final_state.get("hyde_summary", ""),
+        "final_category": final_state.get("hyde_target_category") or "",   # 보류 시 빈 문자열
         "top_distance": final_state.get("top_distance", 0.0),
         "retry_count": final_state.get("retry_count", 0),
         "is_broadening_mode": final_state.get("is_broadening_mode", False),

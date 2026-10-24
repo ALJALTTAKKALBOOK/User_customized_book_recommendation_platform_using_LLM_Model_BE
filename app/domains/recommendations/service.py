@@ -1,7 +1,6 @@
 import json
 import logging
-import numpy as np
-from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, cast
+from typing import Dict, TypedDict, List, AsyncGenerator, Any, Union, Literal, cast
 from typing_extensions import NotRequired 
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,13 +26,10 @@ MAX_RETRIES = 1
 DISTANCE_CONFIDENCE_THRESHOLD = 0.65
 
 # ---------------------------------------------------------
-# 0. 시맨틱 라우팅 유틸리티 (메모리 캐싱)
+# 0. LLM 카테고리 분류용 정의
+#    (임베딩 유사도 라우팅 제거 → LLM이 10개 중 하나를 직접 선택)
 # ---------------------------------------------------------
-CATEGORY_EMBEDDING_CACHE: Dict[str, np.ndarray] = {}
-
-def calculate_cosine_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
-    return float(np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)))
-
+# 카테고리 설명은 이제 임베딩 대상이 아니라 LLM 프롬프트의 분류 기준으로 사용
 CATEGORY_DESCRIPTIONS = {
     "컴퓨터공학": "컴퓨터공학 기초 이론서. 자료구조, 알고리즘, 컴퓨터 구조, 이산수학, 운영체제 원리, 컴파일러 등 학부 전공서. 컴퓨터 역사 및 기술 발전사 교양서 포함.",
     "IT일반": "비전공자를 위한 IT 교양서. 디지털 리터러시, IT 산업 트렌드, 빅테크 비즈니스 모델, AI/챗GPT 교양서, IT 용어 해설, 개발자와 비개발자 간 소통.",
@@ -47,15 +43,12 @@ CATEGORY_DESCRIPTIONS = {
     "모바일프로그래밍": "모바일 앱 개발서. iOS(Swift, RxSwift, MVVM), Android(Kotlin), 크로스플랫폼(Flutter, React Native) 네이티브 앱 개발.",
 }
 
-async def get_or_embed_categories() -> Dict[str, np.ndarray]:
-    global CATEGORY_EMBEDDING_CACHE
-    if not CATEGORY_EMBEDDING_CACHE:
-        for category in ALL_SUB_CATEGORIES:
-            description = CATEGORY_DESCRIPTIONS.get(category, category)
-            text_to_embed = f"{category}: {description}"
-            vector = await embeddings_client.aembed_query(text_to_embed)
-            CATEGORY_EMBEDDING_CACHE[category] = np.array(vector)
-    return CATEGORY_EMBEDDING_CACHE
+CATEGORY_GUIDE = "\n".join(
+    f"- {c}: {CATEGORY_DESCRIPTIONS.get(c, c)}" for c in ALL_SUB_CATEGORIES
+)
+
+# structured output에서 enum으로 강제 → 10개 외의 값은 스키마 단계에서 차단
+SubCategoryLiteral = Literal[tuple(ALL_SUB_CATEGORIES)]  # type: ignore[valid-type]
 
 # ---------------------------------------------------------
 # 1. State 및 Pydantic 정의
@@ -80,14 +73,10 @@ class AgentState(TypedDict):
 
 class ContextAnalysisOutput(BaseModel):
     target_genre: str = Field(description="가장 적합한 장르(대분류)")
-    target_sub_category: str = Field(
-        description="질문의 핵심 주제를 묘사하는 짧고 명확한 가상 카테고리명 (예: 'OS', '프로그래밍언어')"
+    target_sub_category: SubCategoryLiteral = Field(  # type: ignore[valid-type]
+        description="[허용된 서브카테고리] 10개 중 질문에 가장 적합한 하나 (목록의 문자열 그대로)"
     )
-    calculated_difficulty: int = Field(
-        ge=0,
-        le=10,
-        description="계산된 난이도 (0~10)"
-    )
+    calculated_difficulty: int = Field(ge=0, le=10, description="계산된 난이도 (0~10)")
 
 class HydeOutput(BaseModel):
     summary: str = Field(
@@ -109,8 +98,11 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
         ("system",
             f"너는 도서 추천을 위한 컨텍스트 분석기야. 아래 규칙을 엄격히 따라 분석해.\n"
             f"[허용된 장르(대분류)]: {', '.join(GENRES)}\n\n"
-            "1. 유저의 질문을 분석해서, 어떤 IT 분야/주제의 책을 찾는지 가장 잘 묘사하는 "
-            "**가상의 카테고리명을 자유롭게 생성**해. 핵심 키워드가 2~4개 포함되는 1줄로 작성해.\n"
+            f"[허용된 서브카테고리]\n{CATEGORY_GUIDE}\n\n"
+            "1. 유저의 질문이 어떤 IT 분야의 책을 찾는지 판단해서, [허용된 서브카테고리] 중 "
+            "가장 적합한 **하나를 목록의 이름 그대로** 골라. 새 이름을 만들지 마.\n"
+            "   - 특정 언어 문법 자체 → '프로그래밍 언어', 그 언어로 웹/앱을 만드는 법 → '웹프로그래밍'/'모바일프로그래밍'\n"
+            "   - 비전공자 교양·트렌드 → 'IT일반', 전공 이론 전반 → '컴퓨터공학'\n"
             "2. [허용된 장르(대분류)] 중 가장 적합한 장르 하나를 선택해.\n"
             "3. 질문에 '기초, 처음, 쉬운' 등이 있으면 유저 숙련도(domain_levels)의 해당 분야 레벨을 기준으로 -1 하향해.\n"
             "4. '심화, 실전, 어려운' 등이 있으면 난이도 +2 상향해.\n"
@@ -125,22 +117,13 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
     raw_result = await chain.ainvoke({"domain_levels": state["domain_levels"], "query": state["query"]})
     result = cast(ContextAnalysisOutput, raw_result)
 
-    description_vector = np.array(
-        await embeddings_client.aembed_query(result.target_sub_category)
-    )
+    # 임베딩·코사인 비교 없이 LLM이 고른 카테고리를 그대로 사용
+    best_category = result.target_sub_category
+    if best_category not in ALL_SUB_CATEGORIES:  # 방어 코드 (enum 강제라 보통 안 걸림)
+        logger.warning(f"[Node 1] 허용 외 카테고리 반환: '{best_category}' → 'IT일반'으로 대체")
+        best_category = "IT일반"
 
-    category_cache = await get_or_embed_categories()
-    
-    best_category = ""
-    highest_score = -1.0
-
-    for category_name, category_vector in category_cache.items():
-        score = calculate_cosine_similarity(description_vector, category_vector)
-        if score > highest_score:
-            highest_score = score
-            best_category = category_name
-
-    logger.info(f"[Node 1] 시맨틱 라우팅 완료: '{best_category}' (유사도: {highest_score:.4f})")
+    logger.info(f"[Node 1] LLM 카테고리 분류 완료: '{best_category}' (난이도: {result.calculated_difficulty})")
 
     return {
         "hyde_target_genre": result.target_genre,
@@ -151,7 +134,7 @@ async def analyze_context_node(state: AgentState) -> dict[str, Any]:
 # Node 2: 가상 도서(HyDE) 생성 (Broadening 재시도 지원)
 async def generate_hyde_node(state: AgentState) -> dict[str, Any]:
     query = state["query"]
-    target_category = state.get("hyde_target_category", "IT일반")
+    target_category = state.get("hyde_target_category", "IT")
     target_level = state.get("hyde_difficulty_level", 5)
     is_broadening = state.get("is_broadening_mode", False)
 
@@ -381,24 +364,22 @@ async def stream_book_recommendation_service(
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
-        # 🌟 핵심 수정: output_data가 dict 타입일 때만 안전하게 책 목록 추출
-        # (조건부 라우터가 리턴한 문자열 "proceed" / "retry_hyde" 이벤트는 무시)
+        # 검색 결과 갱신
         if kind == "on_chain_end" and node_name == "retrieve_books":
-            output_data = event_data.get("output")
-            if isinstance(output_data, dict) and "recommended_books" in output_data:
-                last_retrieved_books = output_data.get("recommended_books", [])
+            output_data = event_data.get("output", {})
+            last_retrieved_books = output_data.get("recommended_books", [])
 
         # 재시도 루프 진입 시 사용자에게 상태 푸시
         elif kind == "on_chain_start" and node_name == "prepare_broadening":
             yield "event: status\ndata: 🔍 더 광범위한 연관 도서를 탐색하기 위해 검색 조건을 조정 중입니다...\n\n"
 
-        # 최종 확정되어 generate_answer가 시작되는 순간 책 목록 1회 방출
+        # 답변 생성 노드 진입 시 확정된 책 리스트 전송
         elif kind == "on_chain_start" and node_name == "generate_answer":
             if last_retrieved_books:
                 books_json = json.dumps(last_retrieved_books, ensure_ascii=False)
                 yield f"event: books\ndata: {books_json}\n\n"
 
-        # 답변 토큰 실시간 스트리밍
+        # 토큰 스트리밍
         elif kind == "on_chat_model_stream" and node_name == "generate_answer":
             chunk = event_data.get("chunk")
             if chunk and hasattr(chunk, "content") and chunk.content:
@@ -425,10 +406,6 @@ async def get_book_recommendation_service_test(
     
     return {
         "final_category": final_state.get("hyde_target_category", ""),
-        "hyde_target_category": final_state.get("hyde_target_category", ""),
-        "hyde_difficulty_level": final_state.get("hyde_difficulty_level", 0),
-        "hyde_keyword": final_state.get("hyde_keyword", []),
-        "hyde_summary": final_state.get("hyde_summary", ""),
         "top_distance": final_state.get("top_distance", 0.0),
         "retry_count": final_state.get("retry_count", 0),
         "is_broadening_mode": final_state.get("is_broadening_mode", False),

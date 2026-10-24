@@ -6,6 +6,8 @@ from typing_extensions import NotRequired
 from pydantic import BaseModel, Field     
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, case
+import logging
+import sys
 
 from langgraph.graph import StateGraph, END
 from langchain_core.prompts import ChatPromptTemplate
@@ -16,8 +18,17 @@ from app.domains.books.model import Book
 from app.core.constants import GENRES, ALL_SUB_CATEGORIES
 from app.core.llm_helper import llm_analyzer, llm_creator, embeddings_client
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("book_recommendation")
+logger.setLevel(logging.INFO)
 
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s | %(message)s"
+    ))
+    logger.addHandler(handler)
+
+logger.propagate = False
 # ---------------------------------------------------------
 # 설정값: 거리 임계값 및 재시도 상한
 # pgvector 코사인 거리 = 1 - cosine_similarity (0에 가까울수록 유사)
@@ -225,7 +236,7 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
     keyword_str = ", ".join(hyde_keyword)
     hyde_text_to_embed = f"난이도: {hyde_difficulty_level}\n키워드: {keyword_str}\n줄거리: {hyde_summary}"
     
-    query_vector = await embeddings_client.aembed_query(state["query"])
+    query_vector = await embeddings_client.aembed_query(hyde_text_to_embed)
     raw_distance = Book.embedding.cosine_distance(query_vector)
 
     # 카테고리 일치 도서에 -0.15 감쇄 부여
@@ -255,7 +266,34 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
         "sub_category": book.sub_category,
         "distance": round(float(dist), 4)
     } for book, dist in rows]
-            
+      
+      
+    logger.info(
+        "[RAG_DEBUG] %s",
+        json.dumps(
+            {
+                "query": state["query"],
+                "selected_category": hyde_target_category,
+                "difficulty": hyde_difficulty_level,
+                "hyde_summary": hyde_summary,
+                "hyde_keywords": hyde_keyword,
+                "embedding_input": hyde_text_to_embed,
+                "retry_count": state.get("retry_count", 0),
+                "top_distance": top_distance,
+                "books": [
+                    {
+                        "id": book["book_id"],
+                        "title": book["title"],
+                        "category": book["sub_category"],
+                        "weighted_distance": book["distance"],
+                    }
+                    for book in recommended_books_list
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+             
     return {
         "recommended_books": recommended_books_list,
         "top_distance": top_distance

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------
 # 설정값: 거리 임계값 및 재시도 상한
 # pgvector 코사인 거리 = 1 - cosine_similarity (0에 가까울수록 유사)
-# -0.15 보정 후 최상위 1위 도서의 거리가 0.65를 초과하면 유사도 부족(Low Confidence)으로 판단
+# -0.05 보정 후 최상위 1위 도서의 거리가 0.65를 초과하면 유사도 부족(Low Confidence)으로 판단
 # ---------------------------------------------------------
 MAX_RETRIES = 1
 DISTANCE_CONFIDENCE_THRESHOLD = 0.65
@@ -230,7 +230,7 @@ async def retrieve_books_node(state: AgentState, config: RunnableConfig) -> dict
 
     # 카테고리 일치 도서에 -0.15 감쇄 부여
     weighted_distance = raw_distance - case(
-        (Book.sub_category == hyde_target_category, 0.05),
+        (Book.sub_category == hyde_target_category, 0.001),
         else_=0.0
     )
         

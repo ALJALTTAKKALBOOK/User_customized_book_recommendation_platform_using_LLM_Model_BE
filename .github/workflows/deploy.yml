@@ -16,6 +16,7 @@ jobs:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME }}
           key: ${{ secrets.LIGHTSAIL_KEY }}
+          script_stop: true   # 명령 하나라도 실패하면 즉시 중단 + Actions 실패 표시 (조용한 배포 실패 방지)
           script: |
             # 1. 서버의 백엔드 폴더로 이동
             cd /home/ubuntu/User_customized_book_recommendation_platform_using_LLM_Model_BE

@@ -1,0 +1,12 @@
+# 백엔드 이미지 빌드에서 제외할 파일
+# certbot/: root 전용 권한이라 빌드 컨텍스트 전송 시 permission denied로 빌드 실패 (8/3 이후 배포 실패 원인)
+certbot/
+nginx/
+# 시크릿은 이미지에 굽지 않고 docker-compose의 env_file로 런타임 주입
+.env
+.git/
+.github/
+.venv/
+**/__pycache__/
+crawler/data/
+db/

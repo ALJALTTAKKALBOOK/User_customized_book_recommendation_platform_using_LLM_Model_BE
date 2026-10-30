@@ -391,10 +391,12 @@ async def stream_book_recommendation_service(
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
-        # 검색 결과 갱신
+        # output_data가 dict일 때만 책 목록 추출
+        # (조건부 라우터가 리턴한 문자열 "proceed" / "retry_hyde" 이벤트는 무시) — 91b688f 복구
         if kind == "on_chain_end" and node_name == "retrieve_books":
-            output_data = event_data.get("output", {})
-            last_retrieved_books = output_data.get("recommended_books", [])
+            output_data = event_data.get("output")
+            if isinstance(output_data, dict) and "recommended_books" in output_data:
+                last_retrieved_books = output_data.get("recommended_books", [])
 
         # 재시도 루프 진입 시 사용자에게 상태 푸시
         elif kind == "on_chain_start" and node_name == "prepare_broadening":

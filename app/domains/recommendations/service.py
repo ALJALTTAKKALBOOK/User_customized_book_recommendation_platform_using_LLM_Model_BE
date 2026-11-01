@@ -388,6 +388,8 @@ async def stream_book_recommendation_service(
                 sse_data = "\n".join([f"data: {line}" for line in sse_lines])
                 yield f"{sse_data}\n\n"
 
+
+
 async def get_book_recommendation_service_test(
     query: str, 
     current_user: Union[MockUser, User],
@@ -405,10 +407,17 @@ async def get_book_recommendation_service_test(
     final_state = await agent_app.ainvoke(initial_state, config=config)
     
     return {
+        # 기존 응답 필드
         "final_category": final_state.get("hyde_target_category", ""),
         "top_distance": final_state.get("top_distance", 0.0),
         "retry_count": final_state.get("retry_count", 0),
         "is_broadening_mode": final_state.get("is_broadening_mode", False),
         "recommended_books": final_state.get("recommended_books", []),
-        "final_answer": final_state.get("final_answer", "")
+        "final_answer": final_state.get("final_answer", ""),
+
+        # 평가 Runner에서 사용하는 HyDE 필드
+        "hyde_target_category": final_state.get("hyde_target_category", ""),
+        "hyde_difficulty_level": final_state.get("hyde_difficulty_level", 0),
+        "hyde_keyword": final_state.get("hyde_keyword", []),
+        "hyde_summary": final_state.get("hyde_summary", ""),
     }

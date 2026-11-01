@@ -7,7 +7,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.resolve()
 
 # ⚙️ 설정값
-API_URL = "http://127.0.0.1:8000/api/recommendations/eval"
+API_URL = "https://realbookfit.duckdns.org:443/api/recommendations/eval"
 TEST_FILE = BASE_DIR / "test_cases.json"
 OUTPUT_FILE = BASE_DIR / "runner_results_v3.csv"
 

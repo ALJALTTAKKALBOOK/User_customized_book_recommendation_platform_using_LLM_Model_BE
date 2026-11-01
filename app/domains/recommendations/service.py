@@ -360,13 +360,23 @@ async def stream_book_recommendation_service(
     
     async for event in agent_app.astream_events(initial_state, config=config, version="v1"):
         kind = event.get("event")
+        event_name = event.get("name")
         metadata = event.get("metadata", {})
         node_name = metadata.get("langgraph_node")
         event_data = event.get("data", {})
         
         # 검색 결과 갱신
-        if kind == "on_chain_end" and node_name == "retrieve_books":
-            output_data = event_data.get("output", {})
+        if kind == "on_chain_end" and event_name == "retrieve_books":
+            output_data = event_data.get("output")
+
+            if not isinstance(output_data, dict):
+                logger.warning(
+                    "retrieve_books 출력 타입 확인 필요: name=%s, type=%s",
+                    event_name,
+                    type(output_data).__name__,
+                )
+                continue
+
             last_retrieved_books = output_data.get("recommended_books", [])
 
         # 재시도 루프 진입 시 사용자에게 상태 푸시
